@@ -1,0 +1,44 @@
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Builds
+frontend/dist/
+backend/dist/
+backend/frontend/dist/
+
+# Env and secrets
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+backend/.env
+backend/.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Firebase / Vercel / Render
+.firebase/
+.firebaserc.local
+.vercel/
+.render/
+
+# Functions (if using firebase functions workspace)
+backend/functions/node_modules/
+backend/functions/lib/
+
+# Logs
+logs/
+*.log
+*.log.*
+
+
