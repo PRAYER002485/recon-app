@@ -21,26 +21,30 @@ ENV SUBFINDER_VERSION=v2.6.5
 ENV HTTPX_VERSION=v1.6.10
 ENV NAABU_VERSION=v2.3.3
 ENV KATANA_VERSION=v1.1.3
-RUN curl -L -o subfinder.tar.gz https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.tar.gz \
- && tar -xzf subfinder.tar.gz \
- && mv subfinder /usr/local/bin/subfinder \
- && chmod +x /usr/local/bin/subfinder
-RUN curl -L -o httpx.tar.gz https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.tar.gz \
- && tar -xzf httpx.tar.gz \
- && mv httpx /usr/local/bin/httpx \
- && chmod +x /usr/local/bin/httpx
+RUN set -eux; \
+  curl -fL --retry 3 -o subfinder.tar.gz https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.tar.gz; \
+  mkdir -p /tmp/subfinder && tar -xzf subfinder.tar.gz -C /tmp/subfinder; \
+  install -m 0755 $(find /tmp/subfinder -type f -name subfinder | head -n1) /usr/local/bin/subfinder; \
+  rm -rf /tmp/subfinder subfinder.tar.gz
+RUN set -eux; \
+  curl -fL --retry 3 -o httpx.tar.gz https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.tar.gz; \
+  mkdir -p /tmp/httpx && tar -xzf httpx.tar.gz -C /tmp/httpx; \
+  install -m 0755 $(find /tmp/httpx -type f -name httpx | head -n1) /usr/local/bin/httpx; \
+  rm -rf /tmp/httpx httpx.tar.gz
 
 # naabu (port scanner)
-RUN curl -L -o naabu.tar.gz https://github.com/projectdiscovery/naabu/releases/download/${NAABU_VERSION}/naabu_${NAABU_VERSION#v}_linux_amd64.tar.gz \
- && tar -xzf naabu.tar.gz \
- && mv naabu /usr/local/bin/naabu \
- && chmod +x /usr/local/bin/naabu
+RUN set -eux; \
+  curl -fL --retry 3 -o naabu.tar.gz https://github.com/projectdiscovery/naabu/releases/download/${NAABU_VERSION}/naabu_${NAABU_VERSION#v}_linux_amd64.tar.gz; \
+  mkdir -p /tmp/naabu && tar -xzf naabu.tar.gz -C /tmp/naabu; \
+  install -m 0755 $(find /tmp/naabu -type f -name naabu | head -n1) /usr/local/bin/naabu; \
+  rm -rf /tmp/naabu naabu.tar.gz
 
 # katana (crawler)
-RUN curl -L -o katana.tar.gz https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_amd64.tar.gz \
- && tar -xzf katana.tar.gz \
- && mv katana /usr/local/bin/katana \
- && chmod +x /usr/local/bin/katana
+RUN set -eux; \
+  curl -fL --retry 3 -o katana.tar.gz https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_amd64.tar.gz; \
+  mkdir -p /tmp/katana && tar -xzf katana.tar.gz -C /tmp/katana; \
+  install -m 0755 $(find /tmp/katana -type f -name katana | head -n1) /usr/local/bin/katana; \
+  rm -rf /tmp/katana katana.tar.gz
 
 # --- Runtime stage -----------------------------------------------------------
 FROM node:20-bullseye-slim AS runtime
