@@ -1,0 +1,37 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon --watch src --exec ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "postinstall": "npm run build",
+    "snyk:test": "snyk test",
+    "snyk:monitor": "snyk monitor",
+    "snyk:container": "snyk container test --file=../Dockerfile --exclude-app-vulns ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@fastify/rate-limit": "^10.1.1",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.4.0",
+    "execa": "^9.4.0",
+    "express": "^5.1.0",
+    "helmet": "^8.0.0",
+    "firebase": "^12.3.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "snyk": "^1.1290.0"
+  }
+}
