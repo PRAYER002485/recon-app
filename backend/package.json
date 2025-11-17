@@ -16,6 +16,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "dotenv": "^16.4.5",
     "@fastify/rate-limit": "^10.1.1",
     "cors": "^2.8.5",
     "express-rate-limit": "^7.4.0",

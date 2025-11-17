@@ -7,6 +7,20 @@ type ReconRow = {
   statusCode: number | null
   title: string
   technologies: string[]
+  cves?: string[]
+  vulnDetails?: Array<{cve: string, score: string, description: string}>
+  sslInfo?: {
+    isValid: boolean
+    issuer: string | null
+    subject: string | null
+    validFrom: string | null
+    validTo: string | null
+    daysUntilExpiry: number | null
+    signatureAlgorithm: string | null
+    keySize: number | null
+    san: string[] | null
+    error: string | null
+  }
 }
 
 type ReconResponse = {
@@ -18,12 +32,14 @@ type ReconResponse = {
 function App() {
   const API_BASE = (import.meta as any).env?.VITE_API_BASE || ''
   const [stage, setStage] = useState<'home' | 'workspace'>('home')
-  const [activeSection, setActiveSection] = useState<'subdomains' | 'ports' | 'js' | 'nmap'>('subdomains')
+  const [activeSection, setActiveSection] = useState<'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets'>('subdomains')
   const [target, setTarget] = useState('')
+  const [breachEmail, setBreachEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<ReconResponse | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [expandedCves, setExpandedCves] = useState<Set<string>>(new Set())
   const mode: 'fast' | 'full' = 'fast'
 
   // Legacy generic cache (kept for backward compatibility)
@@ -42,10 +58,10 @@ function App() {
   }
 
   // New: per-section cache to avoid re-running on tab switch
-  function getSectionCacheKey(section: 'subdomains' | 'ports' | 'js' | 'nmap', t: string) {
+  function getSectionCacheKey(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string) {
     return `recon-cache:${section}:${t}:${mode}`
   }
-  function loadSectionCache(section: 'subdomains' | 'ports' | 'js' | 'nmap', t: string): ReconResponse | null {
+  function loadSectionCache(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string): ReconResponse | null {
     try {
       const key = getSectionCacheKey(section, t)
       const raw =
@@ -56,7 +72,7 @@ function App() {
       return parsed.data
     } catch { return null }
   }
-  function saveSectionCache(section: 'subdomains' | 'ports' | 'js' | 'nmap', t: string, payload: ReconResponse) {
+  function saveSectionCache(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string, payload: ReconResponse) {
     const envelop = JSON.stringify({ ts: Date.now(), data: payload })
     const key = getSectionCacheKey(section, t)
     try { sessionStorage.setItem(key, envelop) } catch {}
@@ -75,6 +91,25 @@ function App() {
         }
         for (const k of keys) storage.removeItem(k)
       }
+    } catch {}
+  }
+
+  function toggleCveExpansion(rowIndex: number) {
+    const key = `row-${rowIndex}`
+    setExpandedCves(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(key)) {
+        newSet.delete(key)
+      } else {
+        newSet.add(key)
+      }
+      return newSet
+    })
+  }
+
+  function copyToClipboard(text: string) {
+    try {
+      navigator.clipboard.writeText(text)
     } catch {}
   }
 
@@ -147,23 +182,34 @@ function App() {
     }
   }
 
-  async function runJsScan() {
+  async function runUrlsScan() {
     if (!target.trim()) return
     setLoading(true)
     setError(null)
     setData(null)
     try {
-      const resp = await fetch(`${API_BASE}/api/js-scan`, {
+      const resp = await fetch(`${API_BASE}/api/urls-scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target, mode })
       })
       if (!resp.ok) throw new Error(await resp.text())
       const json = await resp.json()
-      const rows = (json.js || []).map((u: string) => ({ url: u, host: new URL(u).hostname, statusCode: null, title: 'JS', technologies: [] as string[] }))
-      const shaped: ReconResponse = { target: json.target, count: rows.length, results: rows }
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: r.statusCode || null,
+          title: r.title || '',
+          technologies: r.technologies || [],
+          isSubdomainHeader: r.isSubdomainHeader || false,
+          parentSubdomain: r.parentSubdomain || null
+        }))
+      }
       setData(shaped)
-      saveSectionCache('js', target.trim(), shaped)
+      saveSectionCache('urls', target.trim(), shaped)
     } catch (e: any) {
       setError(e.message || String(e))
     } finally {
@@ -184,9 +230,227 @@ function App() {
       })
       if (!resp.ok) throw new Error(await resp.text())
       const json = await resp.json()
-      const shaped: ReconResponse = { target: json.target, count: json.count, results: (json.results || []) }
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || r.ip || '',
+          statusCode: typeof r.statusCode === 'number' ? r.statusCode : null,
+          title: r.title || '',
+          technologies: r.technologies || r.openPorts || [],
+          cves: r.cves || [],
+          vulnDetails: r.vulnDetails || [],
+        }))
+      }
       setData(shaped)
       saveSectionCache('nmap', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runSSLCheck() {
+    if (!target.trim()) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/ssl-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target, mode })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: r.statusCode || null,
+          title: r.title || '',
+          technologies: r.technologies || [],
+          sslInfo: r.sslInfo || null,
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('ssl', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runHeadersCheck() {
+    if (!target.trim()) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/headers-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target, mode })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: typeof r.statusCode === 'number' ? r.statusCode : null,
+          title: r.title || '',
+          technologies: r.technologies || []
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('headers', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runDNSHygiene() {
+    if (!target.trim()) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/dns-hygiene`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: typeof r.statusCode === 'number' ? r.statusCode : null,
+          title: r.title || '',
+          technologies: r.technologies || []
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('dns', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runReputation() {
+    if (!target.trim()) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/reputation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: typeof r.statusCode === 'number' ? r.statusCode : null,
+          title: r.title || '',
+          technologies: r.technologies || []
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('reputation', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runBuckets() {
+    if (!target.trim()) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/cloud-buckets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const shaped: ReconResponse = {
+        target: json.target,
+        count: json.count,
+        results: (json.results || []).map((r: any) => ({
+          url: r.url || '',
+          host: r.host || '',
+          statusCode: typeof r.statusCode === 'number' ? r.statusCode : null,
+          title: r.title || '',
+          technologies: r.technologies || []
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('buckets', target.trim(), shaped)
+    } catch (e: any) {
+      setError(e.message || String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runBreachCheck() {
+    const email = breachEmail.trim()
+    if (!email) return
+    setLoading(true)
+    setError(null)
+    setData(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/breach-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const json = await resp.json()
+      const breaches: any[] = json.breaches || []
+      const shaped: ReconResponse = {
+        target: email,
+        count: breaches.length,
+        results: breaches.map((b: any) => ({
+          url: '-',
+          host: json.email || email,
+          statusCode: null,
+          title: `${b.name || 'Breach'}${b.date ? ` (${b.date})` : ''}`,
+          technologies: [
+            ...(b.username ? [`username:${b.username}`] : []),
+            ...(b.password ? ['password:present'] : []),
+            ...(b.hash ? ['hash:present'] : []),
+            ...(b.domain ? [`domain:${b.domain}`] : []),
+          ],
+        }))
+      }
+      setData(shaped)
+      saveSectionCache('breach', email, shaped)
     } catch (e: any) {
       setError(e.message || String(e))
     } finally {
@@ -213,16 +477,16 @@ function App() {
     const { pathname, search } = window.location
     const params = new URLSearchParams(search)
     let t = params.get('target')?.trim() || ''
-    const section = (params.get('section') as 'subdomains' | 'ports' | 'js' | 'nmap' | null) || null
+    const section = (params.get('section') as 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | null) || null
 
     if (!t) {
       try { t = sessionStorage.getItem('lastTarget') || '' } catch {}
     }
 
-    if (pathname.startsWith('/subdomains') || pathname.startsWith('/ports') || pathname.startsWith('/js') || pathname.startsWith('/nmap') || t) {
+    if (pathname.startsWith('/subdomains') || pathname.startsWith('/ports') || pathname.startsWith('/urls') || pathname.startsWith('/nmap') || pathname.startsWith('/ssl') || pathname.startsWith('/breach') || pathname.startsWith('/headers') || pathname.startsWith('/dns') || pathname.startsWith('/reputation') || pathname.startsWith('/buckets') || t) {
       if (t) setTarget(t)
       setStage('workspace')
-      const sec = section || (pathname.startsWith('/ports') ? 'ports' : pathname.startsWith('/js') ? 'js' : pathname.startsWith('/nmap') ? 'nmap' : 'subdomains')
+      const sec = section || (pathname.startsWith('/ports') ? 'ports' : pathname.startsWith('/urls') ? 'urls' : pathname.startsWith('/nmap') ? 'nmap' : pathname.startsWith('/ssl') ? 'ssl' : pathname.startsWith('/breach') ? 'breach' : pathname.startsWith('/headers') ? 'headers' : pathname.startsWith('/dns') ? 'dns' : pathname.startsWith('/reputation') ? 'reputation' : pathname.startsWith('/buckets') ? 'buckets' : 'subdomains')
       setActiveSection(sec)
 
       if (t) {
@@ -233,8 +497,14 @@ function App() {
         // Only run if no cache exists
         if (!cached) {
           if (sec === 'ports') runPorts()
-          else if (sec === 'js') runJsScan()
+          else if (sec === 'urls') runUrlsScan()
           else if (sec === 'nmap') runNmap()
+          else if (sec === 'ssl') runSSLCheck()
+          else if (sec === 'headers') runHeadersCheck()
+          else if (sec === 'dns') runDNSHygiene()
+          else if (sec === 'reputation') runReputation()
+          else if (sec === 'buckets') runBuckets()
+          else if (sec === 'breach') {/* wait for manual run with email */}
           else runRecon()
         }
       }
@@ -246,7 +516,7 @@ function App() {
     <div className="app">
       {stage === 'home' && (
         <div className="home">
-          <h1>Recon Dashboard</h1>
+          <h1>SecRon Dashboard</h1>
           <p>Enter a wildcard, domain, or IP to enumerate subdomains and tech.</p>
           <div className="homeSearch">
             <input
@@ -266,7 +536,7 @@ function App() {
       {stage === 'workspace' && (
         <div className="workspace">
           <aside className="sidebar">
-            <div className="brand">Recon</div>
+            <div className="brand">SecRon</div>
             <div className="targetRow" title={target}><span className="muted">Target:</span> {target}</div>
             <nav>
               <button
@@ -310,23 +580,63 @@ function App() {
               </button>
 
               <button
-                className={`navItem ${activeSection === 'js' ? 'active' : ''}`}
+                className={`navItem ${activeSection === 'urls' ? 'active' : ''}`}
                 onClick={() => {
-                  setActiveSection('js')
+                  setActiveSection('urls')
                   setError(null)
                   const t = target.trim()
                   const params = new URLSearchParams()
                   if (t) params.set('target', t)
-                  params.set('section', 'js')
-                  window.history.pushState(null, '', `/js?${params.toString()}`)
+                  params.set('section', 'urls')
+                  window.history.pushState(null, '', `/urls?${params.toString()}`)
                   if (t) {
-                    const cached = loadSectionCache('js', t)
+                    const cached = loadSectionCache('urls', t)
                     if (cached) setData(cached)
-                    else runJsScan()
+                    else runUrlsScan()
                   }
                 }}
               >
-                JavaScript Scan
+                URLs
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'headers' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('headers')
+                  setError(null)
+                  const t = target.trim()
+                  const params = new URLSearchParams()
+                  if (t) params.set('target', t)
+                  params.set('section', 'headers')
+                  window.history.pushState(null, '', `/headers?${params.toString()}`)
+                  if (t) {
+                    const cached = loadSectionCache('headers', t)
+                    if (cached) setData(cached)
+                    else runHeadersCheck()
+                  }
+                }}
+              >
+                Headers Check
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'dns' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('dns')
+                  setError(null)
+                  const t = target.trim()
+                  const params = new URLSearchParams()
+                  if (t) params.set('target', t)
+                  params.set('section', 'dns')
+                  window.history.pushState(null, '', `/dns?${params.toString()}`)
+                  if (t) {
+                    const cached = loadSectionCache('dns', t)
+                    if (cached) setData(cached)
+                    else runDNSHygiene()
+                  }
+                }}
+              >
+                DNS Hygiene
               </button>
 
               <button
@@ -347,6 +657,80 @@ function App() {
                 }}
               >
                 Nmap
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'ssl' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('ssl')
+                  setError(null)
+                  const t = target.trim()
+                  const params = new URLSearchParams()
+                  if (t) params.set('target', t)
+                  params.set('section', 'ssl')
+                  window.history.pushState(null, '', `/ssl?${params.toString()}`)
+                  if (t) {
+                    const cached = loadSectionCache('ssl', t)
+                    if (cached) setData(cached)
+                    else runSSLCheck()
+                  }
+                }}
+              >
+                SSL/TLS Check
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'reputation' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('reputation')
+                  setError(null)
+                  const t = target.trim()
+                  const params = new URLSearchParams()
+                  if (t) params.set('target', t)
+                  params.set('section', 'reputation')
+                  window.history.pushState(null, '', `/reputation?${params.toString()}`)
+                  if (t) {
+                    const cached = loadSectionCache('reputation', t)
+                    if (cached) setData(cached)
+                    else runReputation()
+                  }
+                }}
+              >
+                Reputation
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'buckets' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('buckets')
+                  setError(null)
+                  const t = target.trim()
+                  const params = new URLSearchParams()
+                  if (t) params.set('target', t)
+                  params.set('section', 'buckets')
+                  window.history.pushState(null, '', `/buckets?${params.toString()}`)
+                  if (t) {
+                    const cached = loadSectionCache('buckets', t)
+                    if (cached) setData(cached)
+                    else runBuckets()
+                  }
+                }}
+              >
+                Open Buckets
+              </button>
+
+              <button
+                className={`navItem ${activeSection === 'breach' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveSection('breach')
+                  setError(null)
+                  setData(null)
+                  const params = new URLSearchParams()
+                  params.set('section', 'breach')
+                  window.history.pushState(null, '', `/breach?${params.toString()}`)
+                }}
+              >
+                Breach Check
               </button>
             </nav>
           </aside>
@@ -370,13 +754,31 @@ function App() {
                   </button>
                 )}
                 {activeSection === 'ports' && (
-                  <button onClick={runPorts} disabled={loading}>
-                    {loading ? 'Scanning...' : 'Run ports'}
-                  </button>
+                  <>
+                    <button onClick={runPorts} disabled={loading}>
+                      {loading ? 'Scanning...' : 'Run ports'}
+                    </button>
+                    <button
+                      style={{ marginLeft: 8 }}
+                      onClick={() => {
+                        setActiveSection('nmap')
+                        setError(null)
+                        const t = target.trim()
+                        const params = new URLSearchParams()
+                        if (t) params.set('target', t)
+                        params.set('section', 'nmap')
+                        window.history.pushState(null, '', `/nmap?${params.toString()}`)
+                        runNmap()
+                      }}
+                      disabled={loading}
+                    >
+                      {loading ? 'Scanning all...' : 'Port scan all subdomains'}
+                    </button>
+                  </>
                 )}
-                {activeSection === 'js' && (
-                  <button onClick={runJsScan} disabled={loading}>
-                    {loading ? 'Scanning...' : 'Run JS scan'}
+                {activeSection === 'urls' && (
+                  <button onClick={runUrlsScan} disabled={loading}>
+                    {loading ? 'Fetching URLs...' : 'Run URLs scan'}
                   </button>
                 )}
                 {activeSection === 'nmap' && (
@@ -384,20 +786,76 @@ function App() {
                     {loading ? 'Scanning...' : 'Run nmap'}
                   </button>
                 )}
+                {activeSection === 'ssl' && (
+                  <button onClick={runSSLCheck} disabled={loading}>
+                    {loading ? 'Checking SSL...' : 'Run SSL check'}
+                  </button>
+                )}
+                {activeSection === 'headers' && (
+                  <button onClick={runHeadersCheck} disabled={loading}>
+                    {loading ? 'Checking...' : 'Run headers check'}
+                  </button>
+                )}
+                {activeSection === 'dns' && (
+                  <button onClick={runDNSHygiene} disabled={loading}>
+                    {loading ? 'Resolving...' : 'Run DNS hygiene'}
+                  </button>
+                )}
+                {activeSection === 'reputation' && (
+                  <button onClick={runReputation} disabled={loading}>
+                    {loading ? 'Checking...' : 'Run reputation'}
+                  </button>
+                )}
+                {activeSection === 'buckets' && (
+                  <button onClick={runBuckets} disabled={loading}>
+                    {loading ? 'Scanning...' : 'Run buckets check'}
+                  </button>
+                )}
+                {activeSection === 'breach' && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      className="homeInput"
+                      style={{ maxWidth: 300 }}
+                      value={breachEmail}
+                      onChange={e => setBreachEmail(e.target.value)}
+                      placeholder="[email protected]"
+                      onKeyDown={(e) => { if (e.key === 'Enter') runBreachCheck() }}
+                    />
+                    <button onClick={runBreachCheck} disabled={loading || !breachEmail.trim()}>
+                      {loading ? 'Checking...' : 'Check breaches'}
+                    </button>
+                  </div>
+                )}
               </div>
             </header>
 
             {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
 
-            {(activeSection === 'subdomains' || activeSection === 'ports' || activeSection === 'js' || activeSection === 'nmap') && (
+          
+            {(activeSection === 'subdomains' || activeSection === 'ports' || activeSection === 'urls' || activeSection === 'nmap' || activeSection === 'ssl' || activeSection === 'breach' || activeSection === 'buckets' || activeSection === 'dns' || activeSection === 'reputation' || activeSection === 'headers') && (
               <section className="results">
                 {data && (
                   <div className="summary">
-                    <span><strong>Target:</strong> {data.target}</span>
+                    <span><strong>{activeSection === 'breach' ? 'Email' : 'Target'}:</strong> {data.target}</span>
                     <span><strong>Entries:</strong> {data.count}</span>
+                    {activeSection === 'urls' && (data as any).totalSubdomains && (
+                      <span><strong>Subdomains:</strong> {(data as any).subdomainsWithHistory}/{(data as any).totalSubdomains} with history</span>
+                    )}
                     <button className="drawerBtn" onClick={() => setDrawerOpen(v => !v)}>
                       {drawerOpen ? 'Hide' : 'Show'} Subdomains
                     </button>
+                  </div>
+                )}
+
+                {activeSection === 'nmap' && loading && (
+                  <div className="placeholder" style={{ marginTop: 12 }}>
+                    Nmap is scanning all subdomains' IPs. This may take some time...
+                  </div>
+                )}
+
+                {activeSection === 'urls' && loading && (
+                  <div className="placeholder" style={{ marginTop: 12 }}>
+                    Fetching historical URLs from Wayback Machine for all subdomains...
                   </div>
                 )}
 
@@ -412,19 +870,37 @@ function App() {
 
                 {data ? (
                   <div className="tableWrap">
-                    <table>
+                    <table className={`resultsTable ${activeSection}-table`}>
                       <thead>
                         <tr>
-                          <th>URL</th>
+                          <th>{activeSection === 'breach' ? 'Record' : 'URL'}</th>
                           <th>Status</th>
                           <th>Title</th>
                           <th>Technologies</th>
+                          {activeSection === 'nmap' && (<th>Found CVEs</th>)}
+                          {activeSection === 'ssl' && (<th>SSL Details</th>)}
                         </tr>
                       </thead>
                       <tbody>
                         {data.results.map((r, i) => (
-                          <tr key={r.url + i}>
-                            <td><a href={r.url} target="_blank" rel="noreferrer">{r.url}</a></td>
+                          <tr key={r.url + i} className={(r as any).isSubdomainHeader ? 'subdomain-header' : ''}>
+                            <td>
+                              {(r as any).isSubdomainHeader ? (
+                                <strong style={{ color: 'var(--accent)', fontSize: '14px' }}>{r.host}</strong>
+                              ) : activeSection === 'breach' ? (
+                                <div className="urlCell">
+                                  <span className="urlText" title={r.title}>{r.title}</span>
+                                </div>
+                              ) : (
+                                <div className="urlCell">
+                                  <a className="urlText" href={r.url} target="_blank" rel="noreferrer" title={r.url}>{r.url}</a>
+                                  <div className="urlActions">
+                                    <button className="iconBtn" title="Copy URL" onClick={() => copyToClipboard(r.url)}>⧉</button>
+                                    <a className="iconBtn link" href={r.url} target="_blank" rel="noreferrer" title="Open in new tab">↗</a>
+                                  </div>
+                                </div>
+                              )}
+                            </td>
                             <td>{r.statusCode ?? '-'}</td>
                             <td>{r.title || '-'}</td>
                             <td>
@@ -436,6 +912,68 @@ function App() {
                                 </div>
                               ) : '-'}
                             </td>
+                            {activeSection === 'nmap' && (
+                              <td>
+                                {r.vulnDetails && r.vulnDetails.length > 0 ? (
+                                  <div className="vuln-details">
+                                    {(expandedCves.has(`row-${i}`) ? r.vulnDetails : r.vulnDetails.slice(0, 5)).map((v, j) => (
+                                      <div key={v.cve + j} className="vuln-item">
+                                        <span className="cve-tag">{v.cve}</span>
+                                        <span className="score">({v.score})</span>
+                                        <div className="description">{v.description}</div>
+                                      </div>
+                                    ))}
+                                    {r.vulnDetails.length > 5 && (
+                                      <div 
+                                        className="more-vulns" 
+                                        onClick={() => toggleCveExpansion(i)}
+                                        style={{ cursor: 'pointer' }}
+                                      >
+                                        {expandedCves.has(`row-${i}`) 
+                                          ? 'Show less' 
+                                          : `+${r.vulnDetails.length - 5} more`
+                                        }
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : r.cves && r.cves.length > 0 ? (
+                                  <div className="tags">
+                                    {r.cves.map((c, j) => (
+                                      <span className="tag" key={c + j}>{c}</span>
+                                    ))}
+                                  </div>
+                                ) : '-'}
+                              </td>
+                            )}
+                            {activeSection === 'ssl' && (
+                              <td>
+                                {r.sslInfo ? (
+                                  <div className="ssl-details">
+                                    <div className="ssl-status">
+                                      <span className={`ssl-badge ${r.sslInfo.isValid ? 'valid' : 'invalid'}`}>
+                                        {r.sslInfo.isValid ? 'Valid' : 'Invalid'}
+                                      </span>
+                                    </div>
+                                    {r.sslInfo.isValid ? (
+                                      <div className="ssl-info">
+                                        <div><strong>Issuer:</strong> {r.sslInfo.issuer || 'Unknown'}</div>
+                                        <div><strong>Subject:</strong> {r.sslInfo.subject || 'Unknown'}</div>
+                                        <div><strong>Expires:</strong> {r.sslInfo.daysUntilExpiry !== null ? `${r.sslInfo.daysUntilExpiry} days` : 'Unknown'}</div>
+                                        <div><strong>Algorithm:</strong> {r.sslInfo.signatureAlgorithm || 'Unknown'}</div>
+                                        <div><strong>Key Size:</strong> {r.sslInfo.keySize ? `${r.sslInfo.keySize} bits` : 'Unknown'}</div>
+                                        {r.sslInfo.san && r.sslInfo.san.length > 0 && (
+                                          <div><strong>SAN:</strong> {r.sslInfo.san.length} domains</div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="ssl-error">
+                                        <strong>Error:</strong> {r.sslInfo.error || 'No certificate found'}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : '-'}
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>

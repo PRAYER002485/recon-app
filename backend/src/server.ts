@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+try { dotenv.config(); } catch {}
 import express from 'express';
 
 import helmet from 'helmet';
@@ -6,7 +8,19 @@ import { z } from 'zod';
 import { spawn } from 'child_process';
 import path from 'path';
 import cors from 'cors';
+import * as tls from 'tls';
+import * as dns from 'dns';
+import { promisify } from 'util';
 const app = express();
+
+// Ensure PATH contains common locations for CLI tools (e.g., ProjectDiscovery binaries in GOPATH)
+// This helps when starting via npm where PATH can be limited.
+try {
+  const currentPath = process.env.PATH || '';
+  const extraPaths = ['/usr/local/bin', '/usr/bin', '/bin', '/root/go/bin'];
+  const merged = Array.from(new Set(currentPath.split(':').concat(extraPaths).filter(Boolean))).join(':');
+  process.env.PATH = merged;
+} catch {}
 
 // Security middleware
 app.use(helmet({
@@ -48,6 +62,11 @@ const UrlScanQuery = z.object({
   mode: z.enum(['fast', 'full']).optional(),
 });
 
+// Email query for breach check
+const EmailQuery = z.object({
+  email: z.string().trim().toLowerCase().email('Invalid email'),
+});
+
 // Health check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -56,7 +75,7 @@ app.get('/api/health', (_req, res) => {
 // Basic rate limiting specific to recon endpoint
 const reconLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 5,
+  limit: 60,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
 });
@@ -334,9 +353,9 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
   const mode = parse.data.mode || 'fast';
 
   // limits to keep runtime sane
-  const maxHosts = mode === 'full' ? 100 : 40;
-  const maxIps = mode === 'full' ? 60 : 20;
-  const nmapTimeoutMs = mode === 'full' ? 1000 * 120 : 1000 * 60;
+  const maxHosts = mode === 'full' ? 200 : 50;
+  // Allow more time per host so nmap can complete service detection and scripts
+  const nmapTimeoutMs = mode === 'full' ? 1000 * 300 : 1000 * 60;
 
   try {
     // 1) subfinder -silent -d <target>
@@ -357,33 +376,26 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
       sfOut.split('\n').map(l => l.trim()).filter(Boolean)
     )).slice(0, maxHosts);
 
-    // 2) resolve A records with dig +short
-    const resolveIp = (host: string) => new Promise<string[]>((resolve) => {
-      const dig = spawn('dig', ['+short', 'A', host], { stdio: ['ignore', 'pipe', 'pipe'] });
-      let out = '';
-      dig.stdout.on('data', (c: Buffer) => { out += c.toString(); });
-      dig.on('close', () => {
-        const ips = out.split('\n').map(l => l.trim()).filter(l => /^\d+\.\d+\.\d+\.\d+$/.test(l));
-        resolve(ips);
-      });
-      dig.on('error', () => resolve([]));
-    });
+    // 2) scan by hostname directly to preserve SNI; skip A record resolution here
 
-    const resolved = await Promise.all(hosts.map(resolveIp));
-    // flatten and de-duplicate IPs
-    const ips = Array.from(new Set(resolved.flat())).slice(0, maxIps);
-
-    // 3) run nmap -p- -sV -O <ip> --script vuln*
+    // 3) run nmap -p- -sV -O <host> --script vuln*
     type NmapResult = {
+      host: string;
       ip: string;
-      openPorts: string[];
-      vulnCount: number;
-      summary: string;
+      openPorts: string[]; // formatted labels "21/tcp ftp Microsoft ftpd"
+      openCount: number;
+      osGuess: string | null;
+      cves: string[];
+      vulnDetails: Array<{cve: string, score: string, description: string}>;
+      filteredCount: number;
+      closedCount: number;
+      hostname: string | null;
     };
 
-    async function scanIp(ip: string): Promise<NmapResult> {
+    async function scanHost(host: string): Promise<NmapResult> {
       return new Promise<NmapResult>((resolve) => {
-        const args = ['-p-', '-sV', '-O', ip, '--script', 'vuln*'];
+        // -Pn: skip host discovery; -T4: faster timings; scan all ports with service/version and OS, plus vuln scripts
+        const args = ['-Pn', '-T4', '-p', '80,443,8080,8000,8443', '-sV', host, '--script', 'vulners'];
         const nmap = spawn('nmap', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let out = '';
         let err = '';
@@ -394,36 +406,172 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
 
         nmap.on('close', () => {
           clearTimeout(timer);
-          // naive parse: lines like "PORT   STATE SERVICE VERSION"
+          // Debug: log the full nmap output (uncomment for debugging)
+          console.log(`Nmap output for ${host}:`, out);
+          // parse open ports lines like: "21/tcp  open  ftp        Microsoft ftpd"
           const open: string[] = [];
           const lines = out.split('\n');
+          let osGuess: string | null = null;
+          let filteredCount = 0;
+          let closedCount = 0;
+          let hostname: string | null = null;
+          let detectedIp: string = '';
+          // capture script/service details under a port as additional tags
+          let lastPortLabel: string | null = null;
+          const cveSet = new Set<string>();
+          const vulnDetails: Array<{cve: string, score: string, description: string}> = [];
+          
           for (const line of lines) {
-            const m = line.match(/^(\d+\/tcp)\s+open\s+([^\s]+)(?:\s+(.*))?$/i);
+            // Debug: log lines that might contain CVEs (uncomment for debugging)
+            if (line.includes('CVE-') || line.includes('vuln')) {
+              console.log(`Processing line: ${line}`);
+            }
+            // Enhanced CVE parsing for vulners script output
+            // Match lines like: "|       NGINX:CVE-2022-41741    7.8     https://vulners.com/nginx/NGINX:CVE-2022-41741"
+            const vulnMatch = line.match(/\|\s+([A-Z0-9-:]+)\s+(\d+\.\d+)\s+(.*)/);
+            if (vulnMatch && vulnMatch[1] && vulnMatch[2] && vulnMatch[3]) {
+              let cve = vulnMatch[1].trim();
+              const score = vulnMatch[2].trim();
+              const description = vulnMatch[3].trim();
+              
+              // Extract just the CVE part from formats like "NGINX:CVE-2022-41741"
+              if (cve.includes('CVE-')) {
+                const cveMatch = cve.match(/CVE-\d{4}-\d{4,7}/i);
+                if (cveMatch) {
+                  const cleanCve = cveMatch[0].toUpperCase();
+                  cveSet.add(cleanCve);
+                  vulnDetails.push({cve: cleanCve, score, description});
+                  console.log(`Found CVE: ${cleanCve} with score: ${score}`); // Debug log
+                }
+              }
+            }
+            
+            // Also collect CVEs from other patterns - more comprehensive
+            const cveMatches = line.match(/CVE-\d{4}-\d{4,7}/gi);
+            if (cveMatches) {
+              for (const c of cveMatches) {
+                const cleanCve = c.toUpperCase();
+                if (!cveSet.has(cleanCve)) {
+                  cveSet.add(cleanCve);
+                  console.log(`Found CVE from pattern match: ${cleanCve}`); // Debug log
+                }
+              }
+            }
+            
+            // Try to match CVEs in different formats that might appear in nmap output
+            const altCveMatch = line.match(/\|\s*([A-Z0-9-]+:CVE-\d{4}-\d{4,7})\s+(\d+\.\d+)\s+(.*)/);
+            if (altCveMatch && altCveMatch[1]) {
+              const cveWithPrefix = altCveMatch[1].trim();
+              const cveMatch = cveWithPrefix.match(/CVE-\d{4}-\d{4,7}/i);
+              if (cveMatch) {
+                const cleanCve = cveMatch[0].toUpperCase();
+                if (!cveSet.has(cleanCve)) {
+                  cveSet.add(cleanCve);
+                  console.log(`Found CVE from alt pattern: ${cleanCve}`); // Debug log
+                }
+              }
+            }
+            const m = line.match(/^\s*(\d+\/(tcp|udp))\s+open\s+([^\s]+)(?:\s+(.*))?$/i);
             if (m) {
               const port = m[1];
-              const svc = m[2];
-              const extra = (m[3] || '').trim();
+              const svc = m[3];
+              const extra = (m[4] || '').trim();
               const label = extra ? `${port} ${svc} ${extra}` : `${port} ${svc}`;
               open.push(label);
+              lastPortLabel = label;
+              continue;
+            }
+            // Associate service/script info lines with the last seen port
+            // Examples: "|_http-server-header: CloudFront"
+            const scriptInfo = line.match(/^\s*\|[_\s]?([^:]+):\s*(.*)$/);
+            if (scriptInfo && lastPortLabel) {
+              const key = (scriptInfo[1] || '').trim();
+              const val = (scriptInfo[2] || '').trim();
+              if (key) {
+                open.push(`${lastPortLabel} | ${key}${val ? `: ${val}` : ''}`);
+              }
+              continue;
+            }
+            // Parse report header to capture hostname
+            const rep = line.match(/^\s*Nmap scan report for\s+(.+?)(?:\s*\((\d+\.\d+\.\d+\.\d+)\))?$/i);
+            if (rep) {
+              const name = (rep[1] || '').trim();
+              const maybeIp = (rep[2] || '').trim();
+              if (name && !/^\d+\.\d+\.\d+\.\d+$/.test(name)) hostname = name;
+              if (maybeIp) detectedIp = maybeIp;
+              continue;
+            }
+            // Example: "Not shown: 65533 filtered tcp ports (no-response), 202 closed tcp ports (reset)"
+            const notShown = line.match(/^\s*Not shown:\s*(.*)$/i);
+            if (notShown) {
+              const rest = notShown[1] as string;
+              const filt = rest.match(/(\d+)\s+filtered\s+tcp\s+ports/i);
+              const closed = rest.match(/(\d+)\s+closed\s+tcp\s+ports/i);
+              if (filt) filteredCount = parseInt(filt[1] as string, 10) || 0;
+              if (closed) closedCount = parseInt(closed[1] as string, 10) || 0;
+              continue;
+            }
+            // OS guess lines examples:
+            // "Running (JUST GUESSING): OpenBSD 4.X (86%)"
+            // "Aggressive OS guesses: OpenBSD 4.0 (86%)"
+            // "Running: Linux 5.X"
+            const os1 = line.match(/^\s*Running\s*:\s*(.*)$/i);
+            const os2 = line.match(/^\s*Running \(JUST GUESSING\):\s*(.*)$/i);
+            const os3 = line.match(/^\s*Aggressive OS guesses:\s*(.*)$/i);
+            if (!osGuess && (os1 || os2 || os3)) {
+              osGuess = (os1?.[1] || os2?.[1] || os3?.[1] || '').trim();
             }
           }
-          const vulnCount = (out.match(/VULNERABLE/gi) || []).length;
-          const summary = `open: ${open.length}, vulns: ${vulnCount}`;
-          resolve({ ip, openPorts: open.slice(0, 10), vulnCount, summary });
+          const cves = Array.from(cveSet).slice(0, 50);
+          console.log(`Host ${host}: Found ${cves.length} CVEs:`, cves); // Debug log
+          // If nothing found, try a quick common-ports pass to avoid empty results on filtered hosts
+          if (open.length === 0) {
+            const quickArgs = ['-Pn', '-T4', '-sV', '-p', '80,443,8080,8000,8443,22,25,53,110,143,3306,3389,5900', host];
+            const quick = spawn('nmap', quickArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+            let qout = '';
+            quick.stdout.on('data', (c: Buffer) => { qout += c.toString(); });
+            quick.on('close', () => {
+              const qlines = qout.split('\n');
+              for (const ql of qlines) {
+                const qcves = ql.match(/CVE-\d{4}-\d{4,7}/gi);
+                if (qcves) { 
+                  for (const c of qcves) {
+                    const cleanCve = c.toUpperCase();
+                    if (!cveSet.has(cleanCve)) {
+                      cveSet.add(cleanCve);
+                      console.log(`Found CVE from quick scan: ${cleanCve}`); // Debug log
+                    }
+                  }
+                }
+                const m = ql.match(/^\s*(\d+\/(tcp|udp))\s+open\s+([^\s]+)(?:\s+(.*))?$/i);
+                if (m) {
+                  const port = m[1];
+                  const svc = m[3];
+                  const extra = (m[4] || '').trim();
+                  const label = extra ? `${port} ${svc} ${extra}` : `${port} ${svc}`;
+                  open.push(label);
+                }
+              }
+              resolve({ host, ip: detectedIp || '', openPorts: open.slice(0, 50), openCount: open.length, osGuess, cves: Array.from(cveSet).slice(0, 50), vulnDetails: vulnDetails.slice(0, 20), filteredCount, closedCount, hostname });
+            });
+            return;
+          }
+          resolve({ host, ip: detectedIp || '', openPorts: open.slice(0, 50), openCount: open.length, osGuess: osGuess, cves, vulnDetails: vulnDetails.slice(0, 20), filteredCount, closedCount, hostname });
         });
 
-        nmap.on('error', () => resolve({ ip, openPorts: [], vulnCount: 0, summary: 'error' }));
+        nmap.on('error', () => resolve({ host, ip: '', openPorts: [], openCount: 0, osGuess: null, cves: [], vulnDetails: [], filteredCount: 0, closedCount: 0, hostname: null }));
       });
     }
 
     // small concurrency (2) to avoid overload
     const results: NmapResult[] = [];
-    const queue = ips.slice();
-    const workers = Math.min(2, queue.length);
+    const queue = hosts.slice(0, maxHosts);
+    const workers = Math.min(4, queue.length);
     const runWorker = async () => {
       while (queue.length) {
-        const ip = queue.shift() as string;
-        const r = await scanIp(ip);
+        const next = queue.shift();
+        if (!next) break;
+        const r = await scanHost(next);
         results.push(r);
       }
     };
@@ -431,13 +579,18 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
 
     // shape for frontend table (Recon-like rows)
     const tableResults = results.map(r => ({
-      url: '', // no direct URL; leave blank
-      host: r.ip,
-      statusCode: null,
-      title: r.summary,
-      technologies: r.openPorts, // show open ports/services as tags
+      url: r.host,
+      host: r.hostname ? `${r.host} (${r.ip || 'unknown IP'})` : (r.ip ? `${r.host} (${r.ip})` : r.host),
+      statusCode: r.openCount,
+      title: r.osGuess
+        ? `${r.osGuess} | open: ${r.openCount} | filtered: ${r.filteredCount} | closed: ${r.closedCount}`
+        : `open: ${r.openCount} | filtered: ${r.filteredCount} | closed: ${r.closedCount}`,
+      technologies: r.openPorts,
+      cves: r.cves,
+      vulnDetails: r.vulnDetails,
     }));
 
+    console.log('Final results being sent to frontend:', JSON.stringify(tableResults, null, 2)); // Debug log
     res.json({ target, count: tableResults.length, results: tableResults });
   } catch (err: any) {
     console.error(err);
@@ -528,6 +681,692 @@ app.post('/api/js-scan', reconLimiter, async (req, res) => {
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ error: 'JS scan failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// SSL/TLS Certificate checking utilities
+const dnsLookup = promisify(dns.lookup);
+
+interface SSLInfo {
+  host: string;
+  port: number;
+  isValid: boolean;
+  issuer: string | null;
+  subject: string | null;
+  validFrom: string | null;
+  validTo: string | null;
+  daysUntilExpiry: number | null;
+  signatureAlgorithm: string | null;
+  keySize: number | null;
+  san: string[] | null;
+  error: string | null;
+}
+
+async function checkSSLCertificate(host: string, port: number = 443): Promise<SSLInfo> {
+  const result: SSLInfo = {
+    host,
+    port,
+    isValid: false,
+    issuer: null,
+    subject: null,
+    validFrom: null,
+    validTo: null,
+    daysUntilExpiry: null,
+    signatureAlgorithm: null,
+    keySize: null,
+    san: null,
+    error: null
+  };
+
+  return new Promise((resolve) => {
+    const socket = tls.connect(port, host, {
+      servername: host,
+      rejectUnauthorized: false,
+      timeout: 10000
+    }, () => {
+      const cert = socket.getPeerCertificate(true);
+      
+      if (cert && Object.keys(cert).length > 0) {
+        result.isValid = true;
+        result.issuer = cert.issuer?.CN || cert.issuer?.O || null;
+        result.subject = cert.subject?.CN || cert.subject?.O || null;
+        result.validFrom = cert.valid_from || null;
+        result.validTo = cert.valid_to || null;
+        result.signatureAlgorithm = (cert as any).sigalg || null;
+        result.keySize = cert.bits || null;
+        
+        // Parse SAN (Subject Alternative Names)
+        if (cert.subjectaltname) {
+          result.san = cert.subjectaltname.split(',').map(name => name.trim());
+        }
+        
+        // Calculate days until expiry
+        if (result.validTo) {
+          const expiryDate = new Date(result.validTo);
+          const now = new Date();
+          const diffTime = expiryDate.getTime() - now.getTime();
+          result.daysUntilExpiry = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+      }
+      
+      socket.destroy();
+      resolve(result);
+    });
+
+    socket.on('error', (err) => {
+      result.error = err.message;
+      socket.destroy();
+      resolve(result);
+    });
+
+    socket.on('timeout', () => {
+      result.error = 'Connection timeout';
+      socket.destroy();
+      resolve(result);
+    });
+  });
+}
+
+// POST /api/ssl-check { target, mode? }
+app.post('/api/ssl-check', reconLimiter, async (req, res) => {
+  const parse = ReconQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { target } = parse.data;
+  const mode = parse.data.mode || 'fast';
+
+  try {
+    // First, discover subdomains using subfinder
+    const subfinderArgs = mode === 'full'
+      ? ['-silent', '-all', '-d', target]
+      : ['-silent', '-d', target];
+
+    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    
+    let subfinderStdout = '';
+    let subfinderStderr = '';
+    const subfinderTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+
+    subfinder.stdout.on('data', (chunk: Buffer) => { subfinderStdout += chunk.toString(); });
+    subfinder.stderr.on('data', (chunk: Buffer) => { subfinderStderr += chunk.toString(); });
+
+    await new Promise<void>((resolve, reject) => {
+      subfinder.on('error', reject);
+      subfinder.on('close', (code) => {
+        clearTimeout(subfinderTimer);
+        if (code === 0 || code === null) resolve();
+        else reject(new Error(`subfinder exited with code ${code}: ${subfinderStderr}`));
+      });
+    });
+
+    const subdomains = Array.from(new Set(
+      subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+    )).slice(0, mode === 'full' ? 200 : 100);
+
+    // Check SSL certificates for each subdomain
+    const sslChecks: Promise<SSLInfo>[] = [];
+    const maxConcurrent = mode === 'full' ? 10 : 20;
+    
+    for (let i = 0; i < subdomains.length; i += maxConcurrent) {
+      const batch = subdomains.slice(i, i + maxConcurrent);
+      const batchPromises = batch.map(host => checkSSLCertificate(host, 443));
+      sslChecks.push(...batchPromises);
+    }
+
+    const sslResults = await Promise.all(sslChecks);
+
+    // Format results for frontend
+    const results = sslResults.map(ssl => ({
+      url: `https://${ssl.host}`,
+      host: ssl.host,
+      statusCode: ssl.isValid ? 200 : 0,
+      title: ssl.isValid 
+        ? `SSL Valid | Expires: ${ssl.daysUntilExpiry} days | ${ssl.issuer || 'Unknown Issuer'}`
+        : `SSL Invalid | ${ssl.error || 'No certificate'}`,
+      technologies: ssl.isValid ? [
+        `SSL/TLS`,
+        ssl.signatureAlgorithm || 'Unknown',
+        ssl.keySize ? `${ssl.keySize} bits` : 'Unknown key size',
+        ssl.san ? `SAN: ${ssl.san.length} domains` : 'No SAN'
+      ] : ['SSL/TLS Error'],
+      sslInfo: {
+        isValid: ssl.isValid,
+        issuer: ssl.issuer,
+        subject: ssl.subject,
+        validFrom: ssl.validFrom,
+        validTo: ssl.validTo,
+        daysUntilExpiry: ssl.daysUntilExpiry,
+        signatureAlgorithm: ssl.signatureAlgorithm,
+        keySize: ssl.keySize,
+        san: ssl.san,
+        error: ssl.error
+      }
+    }));
+
+    res.json({ target, count: results.length, results });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'SSL check failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/breach-check { email }
+app.post('/api/breach-check', reconLimiter, async (req, res) => {
+  const parse = EmailQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { email } = parse.data;
+
+  try {
+    const apiKey = process.env.LEAKCHECK_API_KEY || 'abbda244cbe886227b9e1c4ea023f958b85e0d23';
+    if (!apiKey) {
+      return res.status(500).json({ error: 'API key not configured' });
+    }
+
+    const url = new URL('https://leakcheck.io/api/v2');
+    url.searchParams.set('query', email);
+    url.searchParams.set('type', 'email');
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        'X-API-Key': apiKey,
+        'Accept': 'application/json',
+        'User-Agent': 'ReconApp/1.0',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    const text = await response.text();
+    if (!response.ok) {
+      // LeakCheck may return text body on error
+      return res.status(response.status).json({ error: 'LeakCheck error', message: text || `HTTP ${response.status}` });
+    }
+
+    let json: any;
+    try { json = JSON.parse(text); } catch {
+      return res.status(502).json({ error: 'Invalid response from LeakCheck', body: text.slice(0, 500) });
+    }
+
+    const success = !!json.success || typeof json.found !== 'undefined' || Array.isArray(json.breaches) || Array.isArray(json.data);
+    if (!success) {
+      return res.status(200).json({ email, found: false, count: 0, breaches: [] });
+    }
+
+    // Normalize to a list of breaches
+    const rawBreaches: any[] = Array.isArray(json.breaches) ? json.breaches : (Array.isArray(json.data) ? json.data : []);
+    const breaches = rawBreaches.map((b) => ({
+      name: b.name || b.source || b.title || 'Unknown',
+      date: b.date || b.time || b.added || null,
+      line: b.line || null,
+      password: b.password || b.pass || null,
+      username: b.username || b.login || null,
+      hash: b.hash || null,
+      domain: b.domain || null,
+      email: b.email || email,
+    }));
+
+    res.json({ email, found: breaches.length > 0, count: breaches.length, breaches: breaches.slice(0, 200) });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Breach check failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/urls-scan { target, mode? }
+app.post('/api/urls-scan', reconLimiter, async (req, res) => {
+  const parse = ReconQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { target } = parse.data;
+  const mode = parse.data.mode || 'fast';
+
+  try {
+    // First, discover subdomains using subfinder
+    const subfinderArgs = mode === 'full'
+      ? ['-silent', '-all', '-d', target]
+      : ['-silent', '-d', target];
+
+    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    
+    let subfinderStdout = '';
+    let subfinderStderr = '';
+    const subfinderTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+
+    subfinder.stdout.on('data', (chunk: Buffer) => { subfinderStdout += chunk.toString(); });
+    subfinder.stderr.on('data', (chunk: Buffer) => { subfinderStderr += chunk.toString(); });
+
+    await new Promise<void>((resolve, reject) => {
+      subfinder.on('error', reject);
+      subfinder.on('close', (code) => {
+        clearTimeout(subfinderTimer);
+        if (code === 0 || code === null) resolve();
+        else reject(new Error(`subfinder exited with code ${code}: ${subfinderStderr}`));
+      });
+    });
+
+    const subdomains = Array.from(new Set(
+      subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+    )).slice(0, mode === 'full' ? 100 : 50);
+
+    // Fetch historical URLs from Wayback Machine for each subdomain
+    const waybackPromises: Promise<{ subdomain: string; urls: string[] }>[] = [];
+    const maxConcurrent = mode === 'full' ? 5 : 10;
+    
+    for (let i = 0; i < subdomains.length; i += maxConcurrent) {
+      const batch = subdomains.slice(i, i + maxConcurrent);
+      const batchPromises = batch.map(async (subdomain) => {
+        try {
+          const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=*.${subdomain}/*&collapse=urlkey&output=text&fl=original`;
+          const response = await fetch(waybackUrl, {
+            method: 'GET',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; ReconApp/1.0)',
+            },
+            signal: AbortSignal.timeout(15000) // 15 second timeout
+          });
+          
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          
+          const text = await response.text();
+          const urls = text.split('\n')
+            .map(line => line.trim())
+            .filter(line => line && line.startsWith('http'))
+            .slice(0, mode === 'full' ? 100 : 50); // Limit results
+          
+          return { subdomain, urls };
+        } catch (error) {
+          console.error(`Wayback Machine fetch failed for ${subdomain}:`, error);
+          return { subdomain, urls: [] };
+        }
+      });
+      waybackPromises.push(...batchPromises);
+    }
+
+    const waybackResults = await Promise.all(waybackPromises);
+
+    // Format results for frontend - group by subdomain
+    const results: any[] = [];
+    const subdomainGroups: { [key: string]: string[] } = {};
+
+    waybackResults.forEach(({ subdomain, urls }) => {
+      if (urls.length > 0) {
+        subdomainGroups[subdomain] = urls;
+        // Add subdomain header
+        results.push({
+          url: `https://${subdomain}`,
+          host: subdomain,
+          statusCode: null,
+          title: `Subdomain: ${subdomain}`,
+          technologies: ['Wayback Machine', 'Historical'],
+          isSubdomainHeader: true
+        });
+        // Add URLs for this subdomain
+        urls.forEach(url => {
+          try {
+            const urlObj = new URL(url);
+            results.push({
+              url: url,
+              host: urlObj.hostname,
+              statusCode: null,
+              title: `Historical URL`,
+              technologies: ['Wayback Machine', 'Historical'],
+              isSubdomainHeader: false,
+              parentSubdomain: subdomain
+            });
+          } catch (e) {
+            // Skip invalid URLs
+          }
+        });
+      }
+    });
+
+    // Remove duplicates and limit results
+    const uniqueResults = results.filter((result, index, self) => 
+      index === self.findIndex(r => r.url === result.url)
+    ).slice(0, mode === 'full' ? 500 : 200);
+
+    res.json({ 
+      target, 
+      count: uniqueResults.length, 
+      results: uniqueResults,
+      totalSubdomains: subdomains.length,
+      subdomainsWithHistory: waybackResults.filter(r => r.urls.length > 0).length
+    });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'URLs scan failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/headers-check { target, mode? }
+app.post('/api/headers-check', reconLimiter, async (req, res) => {
+  // Accept URL or wildcard and normalize to a hostname before validating
+  const rawTarget = (req.body && typeof req.body.target === 'string' ? req.body.target : '').trim().toLowerCase();
+  const mode = (req.body && (req.body.mode === 'full' ? 'full' : 'fast')) || 'fast';
+  let target = rawTarget;
+  try {
+    if (/^https?:\/\//i.test(rawTarget)) {
+      target = new URL(rawTarget).hostname.toLowerCase();
+    }
+  } catch {}
+  // Strip wildcard and common prefix
+  if (target.startsWith('*.')) target = target.slice(2);
+  if (target.startsWith('.')) target = target.slice(1);
+  if (target.startsWith('www.')) target = target.slice(4);
+  // Final validation as hostname
+  if (!hostnameRegex.test(target)) {
+    return res.status(400).json({ error: 'Invalid domain', details: { target: ['Provide a domain like example.com (URLs and wildcards are accepted and normalized).'] } });
+  }
+
+  try {
+    const subfinderArgs = mode === 'full'
+      ? ['-silent', '-all', '-d', target]
+      : ['-silent', '-d', target];
+    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let sfOut = '';
+    let sfErr = '';
+    const timer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+    subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
+    subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
+    await new Promise<void>((resolve, reject) => {
+      subfinder.on('error', reject);
+      subfinder.on('close', (code) => { clearTimeout(timer); (code === 0 || code === null) ? resolve() : reject(new Error(`subfinder exited with code ${code}: ${sfErr}`)); });
+    });
+
+    const subdomains = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, mode === 'full' ? 150 : 60);
+    const urls: string[] = [];
+    for (const h of subdomains) {
+      urls.push(`https://${h}`);
+      urls.push(`http://${h}`);
+    }
+
+    type HeaderFinding = {
+      url: string;
+      host: string;
+      statusCode: number | null;
+      title: string;
+      technologies: string[];
+    };
+
+    const checks = [
+      'strict-transport-security',
+      'content-security-policy',
+      'x-frame-options',
+      'x-content-type-options',
+      'referrer-policy',
+      'permissions-policy',
+      'cross-origin-opener-policy',
+      'cross-origin-embedder-policy',
+      'cross-origin-resource-policy',
+    ];
+
+    const fetchWithTimeout = (input: string) => fetch(input, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'ReconApp/1.0' }, signal: AbortSignal.timeout(mode === 'full' ? 12000 : 6000) });
+
+    const results: HeaderFinding[] = [];
+    const max = mode === 'full' ? 200 : 100;
+    const toProbe = urls.slice(0, max);
+    for (const u of toProbe) {
+      try {
+        const r = await fetchWithTimeout(u);
+        const lc = new Map<string, string>();
+        r.headers.forEach((v, k) => lc.set(k.toLowerCase(), v));
+        const missing = checks.filter(h => !lc.has(h));
+        const present = checks.filter(h => lc.has(h)).map(h => `${h}:present`);
+        const title = `${missing.length === 0 ? 'All headers present' : `Missing: ${missing.join(', ')}`}`;
+        results.push({ url: u, host: new URL(u).hostname, statusCode: r.status, title, technologies: present });
+      } catch (e: any) {
+        results.push({ url: u, host: new URL(u).hostname, statusCode: null, title: `Error: ${(e && (e.message || String(e))) || 'request failed'}`, technologies: [] });
+      }
+    }
+
+    res.json({ target, count: results.length, results });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Headers check failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/dns-hygiene { target }
+app.post('/api/dns-hygiene', reconLimiter, async (req, res) => {
+  const parse = ReconQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { target } = parse.data;
+
+  const resolveA = promisify(dns.resolve4);
+  const resolveAAAA = promisify(dns.resolve6);
+  const resolveMX = promisify(dns.resolveMx);
+  const resolveTXT = promisify(dns.resolveTxt);
+  const resolveNS = promisify(dns.resolveNs);
+  const resolveCAA = promisify((dns as any).resolveCaa || ((_h: string, _cb: any) => _cb(new Error('CAA not supported'))));
+
+  try {
+    const [a, aaaa, mx, txt, ns] = await Promise.all([
+      resolveA(target).catch(() => []),
+      resolveAAAA(target).catch(() => []),
+      resolveMX(target).catch(() => []),
+      resolveTXT(target).catch(() => []),
+      resolveNS(target).catch(() => []),
+    ]);
+
+    let caa: any[] = [];
+    try { caa = await resolveCAA(target); } catch {}
+
+    const flatTxt = (txt as string[][]).map(arr => arr.join(''));
+    const spf = flatTxt.find(t => /^v=spf1\s/i.test(t)) || null;
+    // DMARC lives at _dmarc.<domain>
+    let dmarc: string | null = null;
+    try {
+      const dmarcTxt = await resolveTXT(`_dmarc.${target}`);
+      const dmFlat = (dmarcTxt as string[][]).map(a => a.join(''));
+      dmarc = dmFlat.find(t => /^v=DMARC1;/i.test(t)) || null;
+    } catch {}
+
+    const hygieneFindings: Array<{ url: string; host: string; statusCode: number | null; title: string; technologies: string[] }> = [];
+
+    hygieneFindings.push({ url: `dns://${target}`, host: target, statusCode: (a as string[]).length + (aaaa as string[]).length, title: `A/AAAA: ${(a as string[]).join(', ')} ${(aaaa as string[]).join(', ')}`.trim(), technologies: ['A', 'AAAA'] });
+    hygieneFindings.push({ url: `dns://${target}/mx`, host: target, statusCode: (mx as any[]).length, title: mx && (mx as any[]).length ? `MX ok (${(mx as any[]).map((m: any) => `${m.exchange}:${m.priority}`).join(', ')})` : 'No MX records', technologies: ['MX'] });
+    hygieneFindings.push({ url: `dns://${target}/spf`, host: target, statusCode: spf ? 200 : 0, title: spf ? `SPF: ${spf}` : 'SPF missing', technologies: ['SPF'] });
+    hygieneFindings.push({ url: `dns://${target}/dmarc`, host: target, statusCode: dmarc ? 200 : 0, title: dmarc ? `DMARC: ${dmarc}` : 'DMARC missing', technologies: ['DMARC'] });
+    hygieneFindings.push({ url: `dns://${target}/ns`, host: target, statusCode: (ns as string[]).length, title: ns && (ns as string[]).length ? `NS: ${(ns as string[]).join(', ')}` : 'No NS records', technologies: ['NS'] });
+    hygieneFindings.push({ url: `dns://${target}/caa`, host: target, statusCode: caa.length, title: caa && caa.length ? `CAA present (${caa.length})` : 'No CAA records', technologies: ['CAA'] });
+
+    res.json({ target, count: hygieneFindings.length, results: hygieneFindings });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'DNS hygiene failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/reputation { target }
+app.post('/api/reputation', reconLimiter, async (req, res) => {
+  const parse = ReconQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { target } = parse.data;
+
+  try {
+    const vtKey = process.env.VIRUSTOTAL_API_KEY || '';
+    const gsbKey = process.env.GSB_API_KEY || '';
+    const results: Array<{ url: string; host: string; statusCode: number | null; title: string; technologies: string[] }> = [];
+
+    if (vtKey) {
+      try {
+        const vtResp = await fetch(`https://www.virustotal.com/api/v3/domains/${encodeURIComponent(target)}`, {
+          headers: { 'x-apikey': vtKey, 'User-Agent': 'ReconApp/1.0' },
+          signal: AbortSignal.timeout(12000),
+        });
+        const vtJson: any = await vtResp.json().catch(() => ({}));
+        const cats = vtJson?.data?.attributes?.categories || {};
+        const rep = vtJson?.data?.attributes?.reputation ?? null;
+        const harmless = vtJson?.data?.attributes?.last_analysis_stats?.harmless ?? 0;
+        const malicious = vtJson?.data?.attributes?.last_analysis_stats?.malicious ?? 0;
+        results.push({ url: `vt://${target}`, host: target, statusCode: vtResp.status, title: `VT rep=${rep} harmless=${harmless} malicious=${malicious}`, technologies: Object.values(cats) as string[] });
+      } catch (e: any) {
+        results.push({ url: `vt://${target}`, host: target, statusCode: null, title: `VT error: ${(e && (e.message || String(e))) || 'failed'}`, technologies: [] });
+      }
+    }
+
+    if (gsbKey) {
+      try {
+        const gsbBody = {
+          client: { clientId: 'recon-app', clientVersion: '1.0' },
+          threatInfo: {
+            threatTypes: ['MALWARE', 'SOCIAL_ENGINEERING', 'UNWANTED_SOFTWARE', 'POTENTIALLY_HARMFUL_APPLICATION'],
+            platformTypes: ['ANY_PLATFORM'],
+            threatEntryTypes: ['URL'],
+            threatEntries: [{ url: `http://${target}` }, { url: `https://${target}` }]
+          }
+        } as any;
+        const gsbResp = await fetch(`https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${encodeURIComponent(gsbKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(gsbBody),
+          signal: AbortSignal.timeout(12000),
+        });
+        const gsbJson: any = await gsbResp.json().catch(() => ({}));
+        const matches = Array.isArray(gsbJson?.matches) ? gsbJson.matches : [];
+        results.push({ url: `gsb://${target}`, host: target, statusCode: gsbResp.status, title: matches.length ? `GSB matches: ${matches.map((m: any) => m.threatType).join(', ')}` : 'GSB: no matches', technologies: ['GSB'] });
+      } catch (e: any) {
+        results.push({ url: `gsb://${target}`, host: target, statusCode: null, title: `GSB error: ${(e && (e.message || String(e))) || 'failed'}`, technologies: [] });
+      }
+    }
+
+    if (!vtKey && !gsbKey) {
+      results.push({ url: `rep://${target}`, host: target, statusCode: 0, title: 'No API keys configured for reputation. Set VIRUSTOTAL_API_KEY and/or GSB_API_KEY.', technologies: [] });
+    }
+
+    res.json({ target, count: results.length, results });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Reputation check failed', message: err.shortMessage || err.message || String(err) });
+  }
+});
+
+// POST /api/cloud-buckets { target }
+app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
+  const parse = ReconQuery.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: 'Invalid payload', details: parse.error.flatten() });
+  }
+  const { target } = parse.data;
+
+  try {
+    const root = target.replace(/^\*\.?/, '');
+    const base = root.replace(/^www\./, '');
+    const nameCandidatesSet = new Set<string>();
+    const baseParts = base ? base.split('.') : [];
+    const rootLabel = (baseParts[0] || base || '').trim();
+    const primaries: Array<string | undefined> = [
+      base,
+      base ? base.replace(/\./g, '-') : undefined,
+      baseParts.length ? baseParts.join('') : undefined,
+      rootLabel || undefined,
+      rootLabel ? `${rootLabel}-static` : undefined,
+      rootLabel ? `${rootLabel}-assets` : undefined,
+      base ? `${base}-assets` : undefined,
+      base ? `${base}-public` : undefined,
+    ];
+    for (const c of primaries) if (c && c.length > 0) nameCandidatesSet.add(c);
+
+    // Enrich candidates using discovered subdomains (best-effort)
+    try {
+      const sfArgs = ['-silent', '-d', root];
+      const subfinder = spawn('subfinder', sfArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let sfOut = '';
+      let sfErr = '';
+      const sfTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, 1000 * 45);
+      subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
+      subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
+      await new Promise<void>((resolve) => {
+        subfinder.on('error', () => resolve());
+        subfinder.on('close', () => { clearTimeout(sfTimer); resolve(); });
+      });
+      const subs = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, 50);
+      for (const s of subs) {
+        const h = s.replace(/^\*\.?/, '').replace(/^www\./, '');
+        nameCandidatesSet.add(h);
+        nameCandidatesSet.add(h.replace(/\./g, '-'));
+        nameCandidatesSet.add(h.split('.').join(''));
+      }
+    } catch {}
+
+    const nameCandidates = Array.from(nameCandidatesSet);
+
+    type BucketFinding = { url: string; host: string; statusCode: number | null; title: string; technologies: string[] };
+    const findings: BucketFinding[] = [];
+
+    async function tryUrl(u: string, label: string) {
+      try {
+        const r = await fetch(u, { method: 'GET', headers: { 'User-Agent': 'ReconApp/1.0' }, signal: AbortSignal.timeout(8000) });
+        const text = await r.text().catch(() => '');
+        const open = r.ok && /<ListBucketResult|<EnumerationResults|<Error>|\{"kind":"storage#objects"/.test(text);
+        findings.push({ url: u, host: new URL(u).host, statusCode: r.status, title: `${label}: ${open ? 'Public or queryable' : 'Not public'} (${r.status})`, technologies: [label] });
+      } catch (e: any) {
+        findings.push({ url: u, host: new URL(u).host, statusCode: null, title: `${label}: error ${(e && (e.message || String(e))) || 'failed'}` , technologies: [label]});
+      }
+    }
+
+    async function tryAwsCli(name: string) {
+      return new Promise<void>((resolve) => {
+        try {
+          const args = ['s3', 'ls', `s3://${name}/`, '--no-sign-request'];
+          const aws = spawn('aws', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+          let out = '';
+          let err = '';
+          const timer = setTimeout(() => { try { aws.kill('SIGTERM'); } catch {} }, 1000 * 8);
+          aws.stdout.on('data', (c: Buffer) => { out += c.toString(); });
+          aws.stderr.on('data', (c: Buffer) => { err += c.toString(); });
+          aws.on('close', (code) => {
+            clearTimeout(timer);
+            const hasList = (out.trim().length > 0) && (code === 0 || code === null);
+            const host = `${name}.s3.amazonaws.com`;
+            findings.push({
+              url: `s3://${name}/`,
+              host,
+              statusCode: hasList ? 200 : 0,
+              title: hasList ? 'AWS S3 (CLI): Public listing available' : `AWS S3 (CLI): Not public${err ? ` (${(err.split('\n')[0] || '').trim()})` : ''}`,
+              technologies: ['AWS S3 (CLI)']
+            });
+            resolve();
+          });
+          aws.on('error', () => resolve());
+        } catch { resolve(); }
+      });
+    }
+
+    for (const name of nameCandidates.slice(0, 20)) {
+      await Promise.all([
+        tryUrl(`http://${name}.s3.amazonaws.com/?list-type=2`, 'AWS S3'),
+        tryUrl(`https://storage.googleapis.com/storage/v1/b/${name}/o`, 'GCS'),
+        tryUrl(`https://${name}.blob.core.windows.net/?comp=list`, 'Azure Blob'),
+      ]);
+      // Best-effort AWS CLI probe (if aws installed)
+      await tryAwsCli(name);
+    }
+
+    if (findings.length === 0) {
+      findings.push({
+        url: `cloud://${target}`,
+        host: target,
+        statusCode: 0,
+        title: 'No public buckets detected for common names',
+        technologies: ['S3', 'GCS', 'Azure']
+      });
+    }
+
+    res.json({ target, count: findings.length, results: findings });
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: 'Cloud bucket check failed', message: err.shortMessage || err.message || String(err) });
   }
 });
 
