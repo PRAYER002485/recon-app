@@ -29,10 +29,21 @@ type ReconResponse = {
   results: ReconRow[]
 }
 
+const SECTION_KEYS = ['subdomains', 'ports', 'urls', 'nmap', 'ssl', 'breach', 'headers', 'dns', 'reputation', 'buckets'] as const
+type SectionKey = typeof SECTION_KEYS[number]
+type SectionSnapshots = Record<SectionKey, ReconResponse | null>
+
+function createEmptySnapshots(): SectionSnapshots {
+  return SECTION_KEYS.reduce((acc, key) => {
+    acc[key] = null
+    return acc
+  }, {} as SectionSnapshots)
+}
+
 function App() {
   const API_BASE = (import.meta as any).env?.VITE_API_BASE || ''
   const [stage, setStage] = useState<'home' | 'workspace'>('home')
-  const [activeSection, setActiveSection] = useState<'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets'>('subdomains')
+  const [activeSection, setActiveSection] = useState<SectionKey>('subdomains')
   const [target, setTarget] = useState('')
   const [breachEmail, setBreachEmail] = useState('')
   const [loading, setLoading] = useState(false)
@@ -40,6 +51,11 @@ function App() {
   const [data, setData] = useState<ReconResponse | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [expandedCves, setExpandedCves] = useState<Set<string>>(new Set())
+  const [sectionSnapshots, setSectionSnapshots] = useState<SectionSnapshots>(() => createEmptySnapshots())
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportText, setReportText] = useState('')
+  const [reportMeta, setReportMeta] = useState<{ target: string, generatedAt: string } | null>(null)
+  const [reportGenerating, setReportGenerating] = useState(false)
   const mode: 'fast' | 'full' = 'fast'
 
   // Legacy generic cache (kept for backward compatibility)
@@ -58,10 +74,10 @@ function App() {
   }
 
   // New: per-section cache to avoid re-running on tab switch
-  function getSectionCacheKey(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string) {
+  function getSectionCacheKey(section: SectionKey, t: string) {
     return `recon-cache:${section}:${t}:${mode}`
   }
-  function loadSectionCache(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string): ReconResponse | null {
+  function loadSectionCache(section: SectionKey, t: string): ReconResponse | null {
     try {
       const key = getSectionCacheKey(section, t)
       const raw =
@@ -72,7 +88,7 @@ function App() {
       return parsed.data
     } catch { return null }
   }
-  function saveSectionCache(section: 'subdomains' | 'ports' | 'urls' | 'nmap' | 'ssl' | 'breach' | 'headers' | 'dns' | 'reputation' | 'buckets', t: string, payload: ReconResponse) {
+  function saveSectionCache(section: SectionKey, t: string, payload: ReconResponse) {
     const envelop = JSON.stringify({ ts: Date.now(), data: payload })
     const key = getSectionCacheKey(section, t)
     try { sessionStorage.setItem(key, envelop) } catch {}
@@ -122,6 +138,13 @@ function App() {
     }
     return Array.from(set).sort()
   }, [data])
+
+  const hasReportMaterial = useMemo(() => SECTION_KEYS.some(key => !!sectionSnapshots[key]), [sectionSnapshots])
+
+  useEffect(() => {
+    if (!data) return
+    setSectionSnapshots(prev => ({ ...prev, [activeSection]: data }))
+  }, [data, activeSection])
 
   async function runRecon() {
     if (!target.trim()) return
@@ -456,6 +479,54 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  function resolveTargetLabel() {
+    return target.trim() ||
+      sectionSnapshots.subdomains?.target ||
+      sectionSnapshots.ports?.target ||
+      sectionSnapshots.urls?.target ||
+      sectionSnapshots.nmap?.target ||
+      sectionSnapshots.ssl?.target ||
+      sectionSnapshots.headers?.target ||
+      sectionSnapshots.dns?.target ||
+      sectionSnapshots.reputation?.target ||
+      sectionSnapshots.buckets?.target ||
+      'Not specified'
+  }
+
+  function handleGenerateReport() {
+    const resolvedTarget = resolveTargetLabel()
+    setReportGenerating(true)
+    setTimeout(() => {
+      const content = buildReconReport(resolvedTarget, sectionSnapshots)
+      setReportText(content)
+      setReportOpen(true)
+      setReportMeta({ target: resolvedTarget, generatedAt: new Date().toISOString() })
+      setReportGenerating(false)
+    }, 0)
+  }
+
+  function handleCopyReport() {
+    if (!reportText) return
+    copyToClipboard(reportText)
+  }
+
+  function handleDownloadReport() {
+    if (!reportText) return
+    const meta = reportMeta || { target: resolveTargetLabel(), generatedAt: new Date().toISOString() }
+    const markdown = buildDownloadableMarkdown(reportText, meta)
+    const blob = new Blob([markdown], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeTarget = meta.target.replace(/[^\w.-]+/g, '_') || 'recon-report'
+    const stamped = meta.generatedAt.replace(/[:]/g, '-').replace('T', '_').split('.')[0]
+    link.href = url
+    link.download = `${safeTarget}_${stamped}.md`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   function startSearch() {
@@ -826,10 +897,48 @@ function App() {
                     </button>
                   </div>
                 )}
+                <button
+                  className="reportBtn"
+                  onClick={handleGenerateReport}
+                  disabled={!hasReportMaterial || reportGenerating}
+                >
+                  {reportGenerating ? 'Building report...' : reportText ? 'Refresh report' : 'Generate report'}
+                </button>
               </div>
             </header>
 
             {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
+
+            {reportOpen && (
+              <section className="reportPanel">
+                <div className="reportPanelHeader">
+                  <div>
+                    <h3>Analyst Report</h3>
+                    <p>Auto-generated from collected recon data</p>
+                  </div>
+                  <div className="reportPanelActions">
+                    <button onClick={handleGenerateReport} disabled={reportGenerating}>
+                      {reportGenerating ? 'Updating...' : 'Regenerate'}
+                    </button>
+                    <button onClick={handleCopyReport} disabled={!reportText}>
+                      Copy
+                    </button>
+                    <button onClick={handleDownloadReport} disabled={!reportText}>
+                      Download .md
+                    </button>
+                    <button className="linkBtn" onClick={() => setReportOpen(false)}>
+                      Hide
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="reportTextarea"
+                  value={reportText}
+                  readOnly
+                  placeholder="Run at least one scan to populate the report."
+                />
+              </section>
+            )}
 
           
             {(activeSection === 'subdomains' || activeSection === 'ports' || activeSection === 'urls' || activeSection === 'nmap' || activeSection === 'ssl' || activeSection === 'breach' || activeSection === 'buckets' || activeSection === 'dns' || activeSection === 'reputation' || activeSection === 'headers') && (
@@ -882,8 +991,10 @@ function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {data.results.map((r, i) => (
-                          <tr key={r.url + i} className={(r as any).isSubdomainHeader ? 'subdomain-header' : ''}>
+                        {data.results.map((r, i) => {
+                          const rowCves = deriveRowCves(r)
+                          return (
+                            <tr key={r.url + i} className={(r as any).isSubdomainHeader ? 'subdomain-header' : ''}>
                             <td>
                               {(r as any).isSubdomainHeader ? (
                                 <strong style={{ color: 'var(--accent)', fontSize: '14px' }}>{r.host}</strong>
@@ -936,9 +1047,9 @@ function App() {
                                       </div>
                                     )}
                                   </div>
-                                ) : r.cves && r.cves.length > 0 ? (
+                                ) : rowCves.length > 0 ? (
                                   <div className="tags">
-                                    {r.cves.map((c, j) => (
+                                    {rowCves.map((c, j) => (
                                       <span className="tag" key={c + j}>{c}</span>
                                     ))}
                                   </div>
@@ -975,7 +1086,8 @@ function App() {
                               </td>
                             )}
                           </tr>
-                        ))}
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -993,6 +1105,508 @@ function App() {
       </footer>
     </div>
   )
+}
+
+function buildReconReport(targetLabel: string, snapshots: SectionSnapshots): string {
+  const sections = [
+    buildScopeSection(targetLabel, snapshots),
+    buildAssetInventorySection(snapshots),
+    buildUsefulInsightsSection(snapshots),
+    buildTechnologySection(snapshots),
+    buildMechanismSection(snapshots),
+    buildApiSurfaceSection(snapshots),
+    buildCompensatingControlSection(snapshots),
+    buildAttackVectorSection(snapshots),
+    buildClientSideSection(snapshots),
+    buildIdorSection(snapshots),
+    buildFileUploadSection(snapshots),
+    buildThirdPartySection(snapshots),
+    buildDataExposureSection(snapshots),
+    buildInfrastructureSection(snapshots),
+  ]
+
+  return sections.filter(Boolean).join('\n\n').trim() || 'No report data available yet. Run at least one module.'
+}
+
+function buildScopeSection(targetLabel: string, snapshots: SectionSnapshots): string {
+  const subdomainHosts = gatherHostsFromSection(snapshots.subdomains)
+  const portRows = getRenderableRows(snapshots.ports)
+  const nmapRows = getRenderableRows(snapshots.nmap)
+  const bucketRows = getRenderableRows(snapshots.buckets)
+  const scopeLines = [
+    `- Primary target: ${targetLabel}`,
+    `- Hosts enumerated: ${subdomainHosts.length}`,
+    `- Services/ports inspected: ${portRows.length}`,
+    `- Vulnerability scan coverage: ${nmapRows.length ? `${nmapRows.length} assets` : 'pending'}`,
+    `- Storage buckets detected: ${bucketRows.length}`,
+  ]
+  return `## SCOPE\n${scopeLines.join('\n')}`
+}
+
+function buildAssetInventorySection(snapshots: SectionSnapshots): string {
+  const subdomainHosts = gatherHostsFromSection(snapshots.subdomains)
+  const bucketRows = getRenderableRows(snapshots.buckets)
+  const sslRows = getRenderableRows(snapshots.ssl)
+  const assets: string[] = []
+
+  if (subdomainHosts.length) {
+    subdomainHosts.slice(0, 12).forEach((host, idx) => {
+      assets.push(`- ${idx + 1}. ${host}`)
+    })
+    if (subdomainHosts.length > 12) assets.push(`- ... +${subdomainHosts.length - 12} additional hosts`)
+  } else {
+    assets.push('- No subdomain inventory recorded yet.')
+  }
+
+  if (bucketRows.length) {
+    const buckets = bucketRows.map(r => r.url || r.title || r.host || 'Bucket').slice(0, 6)
+    assets.push(`- Buckets: ${formatTopList(buckets, 6)}`)
+  }
+
+  if (sslRows.length) {
+    const issuers = dedupeArray(
+      sslRows
+        .map(r => r.sslInfo?.issuer)
+        .filter((issuer): issuer is string => !!issuer)
+    )
+    if (issuers.length) assets.push(`- Certificate issuers: ${formatTopList(issuers, 4)}`)
+  }
+
+  return `## ASSET INVENTORY\n${assets.join('\n')}`
+}
+
+function buildUsefulInsightsSection(snapshots: SectionSnapshots): string {
+  const insights: string[] = []
+  const subdomainHosts = gatherHostsFromSection(snapshots.subdomains)
+  const portRows = getRenderableRows(snapshots.ports)
+  const sslRows = getRenderableRows(snapshots.ssl)
+  const breachCount = snapshots.breach?.count ?? 0
+
+  if (subdomainHosts.length) {
+    insights.push(`[i] Enumerated ${subdomainHosts.length} unique hosts (${formatTopList(subdomainHosts, 4)})`)
+  }
+
+  if (portRows.length) {
+    const riskyPorts = portRows
+      .map(r => extractPortFromRow(r))
+      .filter((port): port is number => port !== null && [21, 22, 23, 80, 443, 445, 3389, 3306, 5432].includes(port))
+    if (riskyPorts.length) {
+      insights.push(`[i] High-value ports exposed: ${dedupeArray(riskyPorts.map(String)).join(', ')}`)
+    } else {
+      insights.push(`[i] ${portRows.length} listening services observed (sample: ${formatTopList(portRows.map(r => r.title || r.url).filter(Boolean), 4)})`)
+    }
+  }
+
+  if (sslRows.length) {
+    const expiring = sslRows.filter(r => typeof r.sslInfo?.daysUntilExpiry === 'number' && (r.sslInfo?.daysUntilExpiry ?? 0) <= 30)
+    if (expiring.length) insights.push(`[i] ${expiring.length} certificates expire within 30 days (e.g., ${formatTopList(expiring.map(r => r.host || r.url), 3)})`)
+  }
+
+  if (breachCount) {
+    insights.push(`[i] Breach monitor reports ${breachCount} historical exposures for ${snapshots.breach?.target}`)
+  }
+
+  if (!insights.length) insights.push('[i] No enriched insights yet. Run more modules to populate this section.')
+
+  return `## USEFUL INSIGHT\n${insights.join('\n')}`
+}
+
+function buildTechnologySection(snapshots: SectionSnapshots): string {
+  const techCounts = new Map<string, number>()
+  SECTION_KEYS.forEach(key => {
+    const rows = getRenderableRows(snapshots[key])
+    rows.forEach(row => {
+      row.technologies?.forEach(tech => {
+        const label = tech.trim()
+        if (!label) return
+        techCounts.set(label, (techCounts.get(label) || 0) + 1)
+      })
+    })
+  })
+
+  const topTechs = Array.from(techCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([tech, count]) => `- ${tech} (${count})`)
+
+  return `## TECHNOLOGY FINGERPRINTS\n${topTechs.length ? topTechs.join('\n') : '- No technology fingerprints captured yet.'}`
+}
+
+function buildMechanismSection(snapshots: SectionSnapshots): string {
+  const urlRows = getRenderableRows(snapshots.urls)
+  const headerRows = getRenderableRows(snapshots.headers)
+  const hostMap = new Map<string, ReconRow[]>()
+
+  urlRows.forEach(row => {
+    const host = resolveHost(row)
+    if (!host) return
+    if (!hostMap.has(host)) hostMap.set(host, [])
+    hostMap.get(host)?.push(row)
+  })
+
+  const blocks = Array.from(hostMap.entries())
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 5)
+    .map(([host, rows]) => {
+      const endpoints = rows.slice(0, 3).map(row => {
+        const parsed = safeParseUrl(row.url)
+        const path = parsed?.pathname || row.url || row.title || '/'
+        const params = extractQueryParams(parsed)
+        const headerHints = collectHeaderHints(host, headerRows)
+        return `\t- ${path}\t[body params] ${params.length ? params.join(', ') : 'none observed'}\t[cookies or headers required to perform actions] ${headerHints}`
+      })
+      return `[i] ${host}\n${endpoints.join('\n')}`
+    })
+
+  return `## MECHANISM OF DOMAINS\n${blocks.length ? blocks.join('\n') : 'No URL intelligence collected yet.'}`
+}
+
+function buildApiSurfaceSection(snapshots: SectionSnapshots): string {
+  const urlRows = getRenderableRows(snapshots.urls)
+  const apiRows = urlRows.filter(row => {
+    const parsed = safeParseUrl(row.url)
+    const value = (parsed?.pathname || row.url || '').toLowerCase()
+    return /\/api|\/v\d|graphql|rest|soap/.test(value)
+  })
+
+  if (!apiRows.length) return '## API SURFACE SUMMARY\n- No explicit API endpoints enumerated yet.'
+
+  const lines = apiRows.slice(0, 6).map(row => {
+    const parsed = safeParseUrl(row.url)
+    const host = resolveHost(row)
+    const path = parsed?.pathname || row.url
+    const params = extractQueryParams(parsed)
+    return `- ${host}${path} (status ${row.statusCode ?? '-'}) params:${params.length ? ' ' + params.join(', ') : ' none'}`
+  })
+
+  if (apiRows.length > 6) lines.push(`- ... +${apiRows.length - 6} additional API endpoints`)
+
+  return `## API SURFACE SUMMARY\n${lines.join('\n')}`
+}
+
+function buildCompensatingControlSection(snapshots: SectionSnapshots): string {
+  const headerRows = getRenderableRows(snapshots.headers)
+  const signals = summarizeHeaderSignals(headerRows)
+  return [
+    '## COMPENSATING CONTROL',
+    `\t- Cookieflag ${signals.cookieFlag}`,
+    `\t- Browser security header ${signals.browserHeaders}`,
+    `\t- WAF ${signals.waf}`,
+    `\t- CSP ${signals.csp}`,
+    `\t- Client side encoding ${signals.clientEncoding}`,
+    `\t- Server side encoding ${signals.serverEncoding}`,
+  ].join('\n')
+}
+
+function buildAttackVectorSection(snapshots: SectionSnapshots): string {
+  const nmapRows = getRenderableRows(snapshots.nmap)
+  const portRows = getRenderableRows(snapshots.ports)
+  const bucketRows = getRenderableRows(snapshots.buckets)
+  const breachCount = snapshots.breach?.count ?? 0
+
+  const blocks: string[] = []
+
+  const vulnRows = nmapRows.filter(row => {
+    const rowCves = deriveRowCves(row)
+    return (row.vulnDetails && row.vulnDetails.length > 0) || rowCves.length > 0
+  })
+  if (vulnRows.length) {
+    const entries = vulnRows.slice(0, 3).map(row => {
+      const labels = row.vulnDetails && row.vulnDetails.length > 0
+        ? row.vulnDetails.slice(0, 2).map(v => v.cve)
+        : deriveRowCves(row).slice(0, 3)
+      return `\t[+] ${row.host || row.url}: ${labels.join(', ') || 'CVE detected'}`
+    })
+    blocks.push(`[i] Service CVEs and outdated daemons\n${entries.join('\n')}`)
+  }
+
+  const riskyPorts = portRows
+    .map(r => ({ row: r, port: extractPortFromRow(r) }))
+    .filter(item => item.port !== null && [21, 22, 23, 445, 3389, 3306, 5432].includes(item.port as number))
+  if (riskyPorts.length) {
+    const entries = riskyPorts.slice(0, 3).map(item => `\t[+] ${item.row.host || item.row.url}: tcp/${item.port}`)
+    blocks.push(`[i] Administrative ports exposed\n${entries.join('\n')}`)
+  }
+
+  if (bucketRows.length) {
+    const entries = bucketRows.slice(0, 3).map(row => `\t[+] ${row.url || row.title || row.host}`)
+    blocks.push(`[i] Public cloud storage or object listings\n${entries.join('\n')}`)
+  }
+
+  if (breachCount) {
+    blocks.push(`[i] Account takeover context\n\t[+] ${breachCount} historical breach indicators linked to ${snapshots.breach?.target}`)
+  }
+
+  if (!blocks.length) blocks.push('[i] Awaiting additional telemetry to propose prioritized attack vectors.')
+
+  return `## ATTACKING VECTOR\n${blocks.join('\n')}`
+}
+
+function buildClientSideSection(snapshots: SectionSnapshots): string {
+  const headerRows = getRenderableRows(snapshots.headers)
+  const urlRows = getRenderableRows(snapshots.urls)
+  const signals = summarizeHeaderSignals(headerRows)
+  const lines: string[] = []
+
+  if (signals.csp === 'NOT OBSERVED' || signals.browserHeaders === 'NOT OBSERVED') {
+    lines.push('- CSP or modern browser hardening missing on sampled endpoints.')
+  }
+
+  const reflectiveParams = urlRows.filter(row => {
+    const value = (row.url || '').toLowerCase()
+    return ['callback', 'redirect', 'return', 'lang', 'template', 'html', 'content'].some(keyword => value.includes(keyword))
+  })
+  if (reflectiveParams.length) {
+    lines.push(`- Potential reflective parameters: ${formatTopList(reflectiveParams.map(r => r.url || r.title).filter(Boolean), 4)}`)
+  }
+
+  if (!lines.length) lines.push('- No client-side injection clues detected yet.')
+
+  return `## CLIENT SIDE INJECTION NOTES\n${lines.join('\n')}`
+}
+
+function buildIdorSection(snapshots: SectionSnapshots): string {
+  const urlRows = getRenderableRows(snapshots.urls)
+  const candidates = urlRows.filter(row => {
+    const value = (row.url || '').toLowerCase()
+    return /(account|user|profile|invoice|order|tenant|org|uid|customer)/.test(value)
+  })
+
+  if (!candidates.length) {
+    return `## IDOR Notes\n\t## ACCOUNT 1 ->\n\t\t- No potential IDOR parameters detected yet.`
+  }
+
+  const blocks = candidates.slice(0, 4).map((row, idx) => {
+    return `\t## ACCOUNT ${idx + 1} ->\n\t\t- ${row.url || row.title || 'Endpoint'}`
+  })
+
+  return `## IDOR Notes\n${blocks.join('\n')}`
+}
+
+function buildFileUploadSection(snapshots: SectionSnapshots): string {
+  const urlRows = getRenderableRows(snapshots.urls)
+  const uploaders = urlRows.filter(row => /upload|import|attachment|media/.test((row.url || '').toLowerCase()))
+
+  if (!uploaders.length) return '## FILE UPLOAD\n- No file handling endpoints observed yet.'
+
+  const lines = uploaders.slice(0, 5).map(row => `- ${row.url || row.title} (status ${row.statusCode ?? '-'})`)
+  if (uploaders.length > 5) lines.push(`- ... +${uploaders.length - 5} additional upload endpoints`)
+
+  return `## FILE UPLOAD\n${lines.join('\n')}`
+}
+
+function buildThirdPartySection(snapshots: SectionSnapshots): string {
+  const subdomainHosts = gatherHostsFromSection(snapshots.subdomains)
+  const techStrings = SECTION_KEYS.flatMap(key => {
+    const rows = getRenderableRows(snapshots[key])
+    return rows.flatMap(row => row.technologies || [])
+  })
+  const signals = [...subdomainHosts, ...techStrings.map(t => t.toLowerCase())]
+  const keywords = [
+    { key: 'cloudflare', label: 'Cloudflare CDN/WAF' },
+    { key: 'akamai', label: 'Akamai CDN' },
+    { key: 'fastly', label: 'Fastly CDN' },
+    { key: 'azure', label: 'Azure services' },
+    { key: 'amazonaws', label: 'AWS services' },
+    { key: 'googleapis', label: 'Google Cloud services' },
+    { key: 'stripe', label: 'Stripe payments' },
+    { key: 'paypal', label: 'PayPal integrations' },
+    { key: 'auth0', label: 'Auth0 authentication' },
+    { key: 'okta', label: 'Okta SSO' },
+    { key: 'zendesk', label: 'Zendesk support' },
+    { key: 'salesforce', label: 'Salesforce/CRM integrations' },
+  ]
+
+  const matches = keywords
+    .filter(item => signals.some(signal => signal.toLowerCase().includes(item.key)))
+    .map(item => `- ${item.label}`)
+
+  return `## THIRD-PARTY INTEGRATIONS\n${matches.length ? matches.join('\n') : '- No explicit third-party integrations fingerprinted yet.'}`
+}
+
+function buildDataExposureSection(snapshots: SectionSnapshots): string {
+  const urlRows = getRenderableRows(snapshots.urls)
+  const sensitive = urlRows.filter(row => /(invoice|billing|payment|ticket|customer|profile|credential|token)/.test((row.url || '').toLowerCase()))
+
+  if (!sensitive.length) return '## DATA EXPOSURE / PII FOOTPRINT\n- No sensitive endpoints highlighted yet.'
+
+  const lines = sensitive.slice(0, 6).map(row => `- ${row.url || row.title} -> status ${row.statusCode ?? '-'}`)
+  if (sensitive.length > 6) lines.push(`- ... +${sensitive.length - 6} additional sensitive-looking endpoints`)
+
+  return `## DATA EXPOSURE / PII FOOTPRINT\n${lines.join('\n')}`
+}
+
+function buildInfrastructureSection(snapshots: SectionSnapshots): string {
+  const dnsRows = getRenderableRows(snapshots.dns)
+  const reputationRows = getRenderableRows(snapshots.reputation)
+  const sslRows = getRenderableRows(snapshots.ssl)
+  const lines: string[] = []
+
+  if (dnsRows.length) {
+    lines.push(`- DNS hygiene findings (${dnsRows.length}) e.g., ${formatTopList(dnsRows.map(r => r.title || r.url || r.host || 'record'), 3)}`)
+  }
+  if (reputationRows.length) {
+    lines.push(`- Reputation feeds (${reputationRows.length}) sample: ${formatTopList(reputationRows.map(r => r.title || r.url).filter(Boolean), 3)}`)
+  }
+  if (sslRows.length) {
+    const invalid = sslRows.filter(r => r.sslInfo && !r.sslInfo.isValid)
+    if (invalid.length) lines.push(`- ${invalid.length} hosts with invalid or broken certificates`)
+  }
+
+  if (!lines.length) lines.push('- No infrastructure telemetry captured yet.')
+
+  return `## INFRASTRUCTURE SIGNALS\n${lines.join('\n')}`
+}
+
+function buildDownloadableMarkdown(report: string, meta: { target: string, generatedAt: string }): string {
+  const generatedDate = new Date(meta.generatedAt)
+  const header = [
+    '# SecRon Recon Report',
+    `- Target: ${meta.target}`,
+    `- Generated: ${generatedDate.toLocaleString()} (${meta.generatedAt})`,
+    `- Sections: ${countSections(report)}`
+  ].join('\n')
+
+  const highlightLines = report
+    .split('\n')
+    .filter(line => line.trim().startsWith('[i]'))
+    .slice(0, 8)
+    .map(line => `- ${line.replace(/^\[i\]\s*/, '💡 ')}`)
+
+  const highlightBlock = highlightLines.length
+    ? `\n## Highlights\n${highlightLines.join('\n')}\n`
+    : ''
+
+  return `${header}${highlightBlock}\n${report}`
+}
+
+function countSections(report: string): number {
+  return report.split('\n').filter(line => line.startsWith('## ')).length
+}
+
+function getRenderableRows(response: ReconResponse | null): ReconRow[] {
+  if (!response || !Array.isArray(response.results)) return []
+  return response.results.filter(row => !(row as any).isSubdomainHeader)
+}
+
+function gatherHostsFromSection(response: ReconResponse | null): string[] {
+  const rows = getRenderableRows(response)
+  const hosts = rows
+    .map(row => resolveHost(row))
+    .filter((host): host is string => !!host)
+  return dedupeArray(hosts)
+}
+
+function resolveHost(row: ReconRow): string {
+  if (row.host) return row.host
+  const parsed = safeParseUrl(row.url)
+  return parsed?.hostname || ''
+}
+
+function safeParseUrl(value?: string): URL | null {
+  if (!value) return null
+  try {
+    if (!/^https?:\/\//i.test(value)) {
+      return new URL(`https://${value}`)
+    }
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+function extractQueryParams(parsed: URL | null): string[] {
+  if (!parsed) return []
+  return Array.from(parsed.searchParams.keys())
+}
+
+function formatTopList(values: string[], limit = 5): string {
+  if (!values.length) return 'none'
+  const sliced = values.slice(0, limit)
+  const extra = values.length - sliced.length
+  return `${sliced.join(', ')}${extra > 0 ? ` +${extra} more` : ''}`
+}
+
+function dedupeArray<T>(values: T[]): T[] {
+  return Array.from(new Set(values))
+}
+
+function extractCvesFromText(text?: string | null): string[] {
+  if (!text) return []
+  const matches = text.match(/CVE-\d{4}-\d{4,7}/gi)
+  if (!matches) return []
+  return matches.map(m => m.toUpperCase())
+}
+
+function deriveRowCves(row: ReconRow): string[] {
+  const direct = Array.isArray(row.cves)
+    ? row.cves.filter((c): c is string => !!c).map(c => c.toUpperCase())
+    : []
+  const techCves = (row.technologies || []).flatMap(extractCvesFromText)
+  const titleCves = extractCvesFromText(row.title)
+  const hostCves = extractCvesFromText(row.host)
+  const urlCves = extractCvesFromText(row.url)
+  return dedupeArray([...direct, ...techCves, ...titleCves, ...hostCves, ...urlCves])
+}
+
+function extractPortFromRow(row: ReconRow): number | null {
+  const sources = [row.title, row.url]
+  for (const source of sources) {
+    if (!source) continue
+    const match = source.match(/:(\d{2,5})/)
+    if (match) return Number(match[1])
+  }
+  return null
+}
+
+function collectHeaderHints(host: string, headerRows: ReconRow[]): string {
+  if (!host || !headerRows.length) return 'not observed'
+  const relevant = headerRows.filter(row => {
+    const rowHost = resolveHost(row)
+    return rowHost && (rowHost === host || rowHost.endsWith(`.${host}`) || host.endsWith(`.${rowHost}`))
+  })
+  if (!relevant.length) return 'not observed'
+  const tags = dedupeArray(relevant.flatMap(row => row.technologies || []))
+  if (tags.length) return tags.slice(0, 3).join(', ')
+  const titles = relevant.map(row => row.title).filter(Boolean)
+  return titles.slice(0, 2).join(', ') || 'headers captured'
+}
+
+function summarizeHeaderSignals(rows: ReconRow[]) {
+  if (!rows.length) {
+    return {
+      cookieFlag: 'NOT CHECKED',
+      browserHeaders: 'NOT CHECKED',
+      waf: 'NOT CHECKED',
+      csp: 'NOT CHECKED',
+      clientEncoding: 'NOT CHECKED',
+      serverEncoding: 'NOT CHECKED',
+    }
+  }
+
+  const text = rows
+    .flatMap(row => [
+      row.title || '',
+      row.url || '',
+      row.host || '',
+      ...(row.technologies || []),
+    ])
+    .join(' ')
+    .toLowerCase()
+
+  const contains = (keywords: string | string[]) => {
+    const list = Array.isArray(keywords) ? keywords : [keywords]
+    return list.some(keyword => text.includes(keyword))
+  }
+
+  return {
+    cookieFlag: contains(['secure', 'httponly', 'samesite']) ? 'LIKELY' : 'NOT OBSERVED',
+    browserHeaders: contains(['strict-transport-security', 'x-frame-options', 'x-content-type-options', 'referrer-policy']) ? 'PRESENT' : 'NOT OBSERVED',
+    waf: contains(['cloudflare', 'akamai', 'imperva', 'fastly', 'aws waf', 'f5']) ? 'LIKELY' : 'NOT OBSERVED',
+    csp: contains(['content-security-policy', 'csp']) ? 'PRESENT' : 'NOT OBSERVED',
+    clientEncoding: contains(['react', 'vue', 'client encode', 'escape']) ? 'PARTIAL' : 'UNKNOWN',
+    serverEncoding: contains(['sanitize', 'validation', 'encoded server', 'orm']) ? 'PARTIAL' : 'UNKNOWN',
+  }
 }
 
 export default App
