@@ -20,12 +20,14 @@ RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib
 # Pin to an existing release (v2.6.5 was removed and returns 404)
 # Use a published release asset that exists (v2.10.1 tarball 404s)
 ENV SUBFINDER_VERSION=v2.10.1
+ENV SUBFINDER_VERSION=v2.10.1
 RUN set -eux; \
-  curl -fL --retry 3 -o subfinder.tar.gz \
-  https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.tar.gz; \
-  mkdir -p /tmp/subfinder && tar -xzf subfinder.tar.gz -C /tmp/subfinder; \
+  curl -fL --retry 3 -o subfinder.zip \
+  https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.zip; \
+  mkdir -p /tmp/subfinder && unzip subfinder.zip -d /tmp/subfinder; \
   install -m 0755 $(find /tmp/subfinder -type f -name subfinder | head -n1) /usr/local/bin/subfinder; \
-  rm -rf /tmp/subfinder subfinder.tar.gz
+  rm -rf /tmp/subfinder subfinder.zip
+
 RUN set -eux; \
   curl -fL --retry 3 -o httpx.tar.gz https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.tar.gz; \
   mkdir -p /tmp/httpx && tar -xzf httpx.tar.gz -C /tmp/httpx; \
