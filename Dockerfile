@@ -19,12 +19,10 @@ WORKDIR /tmp
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Pin to an existing release (v2.6.5 was removed and returns 404)
 # Use a published release asset that exists (v2.10.1 tarball 404s)
-ENV SUBFINDER_VERSION=v2.9.1
-ENV HTTPX_VERSION=v1.6.10
-ENV NAABU_VERSION=v2.3.3
-ENV KATANA_VERSION=v1.1.3
+ENV SUBFINDER_VERSION=v2.12.0
 RUN set -eux; \
-  curl -fL --retry 3 -o subfinder.tar.gz https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.tar.gz; \
+  curl -fL --retry 3 -o subfinder.tar.gz \
+  https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.tar.gz; \
   mkdir -p /tmp/subfinder && tar -xzf subfinder.tar.gz -C /tmp/subfinder; \
   install -m 0755 $(find /tmp/subfinder -type f -name subfinder | head -n1) /usr/local/bin/subfinder; \
   rm -rf /tmp/subfinder subfinder.tar.gz
