@@ -19,7 +19,12 @@ WORKDIR /tmp
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Pin to an existing release (v2.6.5 was removed and returns 404)
 # Use a published release asset that exists (v2.10.1 tarball 404s)
+
+ENV HTTPX_VERSION=v1.6.10
+ENV NAABU_VERSION=v2.3.3
+ENV KATANA_VERSION=v1.1.3
 RUN apt-get update && apt-get install -y unzip
+
 ENV SUBFINDER_VERSION=v2.10.1
 RUN set -eux; \
   curl -fL --retry 3 -o subfinder.zip \
