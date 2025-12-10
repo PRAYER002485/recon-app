@@ -18,7 +18,8 @@ FROM debian:stable-slim AS tools
 WORKDIR /tmp
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Pin to an existing release (v2.6.5 was removed and returns 404)
-ENV SUBFINDER_VERSION=v2.6.9
+# v2.6.9 also 404s on GitHub; v2.6.4 is still available.
+ENV SUBFINDER_VERSION=v2.6.4
 ENV HTTPX_VERSION=v1.6.10
 ENV NAABU_VERSION=v2.3.3
 ENV KATANA_VERSION=v1.1.3
