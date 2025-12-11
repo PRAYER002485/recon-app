@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib
 ENV HTTPX_VERSION=v1.6.10
 ENV NAABU_VERSION=v2.3.3
 ENV KATANA_VERSION=v1.1.3
-RUN apt-get update && apt-get install -y unzip
+RUN apt-get update && apt-get install -y curl unzip
 
 ENV SUBFINDER_VERSION=v2.10.1
 RUN set -eux; \
