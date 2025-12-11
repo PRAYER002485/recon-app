@@ -34,21 +34,21 @@ RUN set -eux; \
   rm -rf /tmp/subfinder subfinder.zip
 
 RUN set -eux; \
-  curl -fL --retry 3 -o httpx.tar.gz https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.tar.gz; \
+  curl -fL --retry 3 -o httpx.tar.gz https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.zip; \
   mkdir -p /tmp/httpx && tar -xzf httpx.tar.gz -C /tmp/httpx; \
   install -m 0755 $(find /tmp/httpx -type f -name httpx | head -n1) /usr/local/bin/httpx; \
   rm -rf /tmp/httpx httpx.tar.gz
 
 # naabu (port scanner)
 RUN set -eux; \
-  curl -fL --retry 3 -o naabu.tar.gz https://github.com/projectdiscovery/naabu/releases/download/${NAABU_VERSION}/naabu_${NAABU_VERSION#v}_linux_amd64.tar.gz; \
+  curl -fL --retry 3 -o naabu.tar.gz https://github.com/projectdiscovery/naabu/releases/download/${NAABU_VERSION}/naabu_${NAABU_VERSION#v}_linux_amd64.zip; \
   mkdir -p /tmp/naabu && tar -xzf naabu.tar.gz -C /tmp/naabu; \
   install -m 0755 $(find /tmp/naabu -type f -name naabu | head -n1) /usr/local/bin/naabu; \
   rm -rf /tmp/naabu naabu.tar.gz
 
 # katana (crawler)
 RUN set -eux; \
-  curl -fL --retry 3 -o katana.tar.gz https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_amd64.tar.gz; \
+  curl -fL --retry 3 -o katana.tar.gz https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_amd64.zip; \
   mkdir -p /tmp/katana && tar -xzf katana.tar.gz -C /tmp/katana; \
   install -m 0755 $(find /tmp/katana -type f -name katana | head -n1) /usr/local/bin/katana; \
   rm -rf /tmp/katana katana.tar.gz
