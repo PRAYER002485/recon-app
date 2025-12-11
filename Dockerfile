@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY backend/package*.json ./backend/
 COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm ci && cd ../backend && npm ci
+RUN cd frontend && npm ci && cd ../backend && npm ci --ignore-scripts
 
 COPY frontend ./frontend
 RUN cd frontend && npm run build
@@ -59,7 +59,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build /app/backend/package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=build /app/backend/dist ./dist
 COPY --from=build /app/backend/frontend/dist ./frontend/dist
