@@ -1560,7 +1560,7 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = parseInt(process.env.PORT || '4000', 10);
 // Serve frontend build (optional - only if it exists, since frontend is deployed separately)
 const frontendDist = path.resolve(__dirname, '../../frontend/dist');
 if (existsSync(frontendDist)) {
