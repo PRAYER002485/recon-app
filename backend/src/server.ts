@@ -105,120 +105,110 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
     const outputLimitBytes = 5 * 1024 * 1024; // 5MB cap
     let totalBytes = 0;
 
-    // Try subfinder first, fallback to base domain if it fails
-    let useSubfinder = true;
+    // Step 1: Run subfinder first and capture its output
+    let subdomains: string[] = [];
+    let subfinderStdout = '';
+    let subfinderStderr = '';
+    
     try {
       const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const subfinderTimer = setTimeout(() => { 
+        try { subfinder.kill('SIGTERM'); } catch {} 
+      }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+
+      subfinder.stdout.on('data', (chunk: Buffer) => { 
+        subfinderStdout += chunk.toString(); 
+      });
+      subfinder.stderr.on('data', (chunk: Buffer) => { 
+        subfinderStderr += chunk.toString(); 
+      });
+
+      await new Promise<void>((resolve) => {
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          clearTimeout(subfinderTimer);
+          resolve();
+        });
+        subfinder.on('close', (code) => {
+          clearTimeout(subfinderTimer);
+          if (code === 0 || code === null) {
+            // Success - parse subdomains
+            subdomains = Array.from(new Set(
+              subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+            ));
+            console.log(`subfinder found ${subdomains.length} subdomains for ${target}`);
+          } else {
+            console.warn(`subfinder exited with code ${code} for ${target}: ${subfinderStderr || 'no stderr'}`);
+            // Still try to parse any output we got
+            subdomains = Array.from(new Set(
+              subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+            ));
+            if (subdomains.length > 0) {
+              console.log(`subfinder found ${subdomains.length} subdomains despite exit code ${code}`);
+            }
+          }
+          resolve();
+        });
+      });
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}:`, sfErr?.message || sfErr);
+    }
+
+    // Step 2: If no subdomains found, use base domain
+    if (subdomains.length === 0) {
+      console.log(`No subdomains found for ${target}, using base domain`);
+      subdomains = [target];
+    }
+
+    // Step 3: Run httpx on discovered subdomains
+    try {
       const httpx = spawn('httpx', httpxArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-      // Pipe subfinder output into httpx input
-      subfinder.stdout.pipe(httpx.stdin);
-
-      const killAll = (signal: NodeJS.Signals = 'SIGTERM') => {
-        try { subfinder.kill(signal); } catch {}
-        try { httpx.kill(signal); } catch {}
-      };
-
-      const killTimer = setTimeout(() => {
-        killAll('SIGTERM');
+      const httpxTimer = setTimeout(() => { 
+        try { httpx.kill('SIGTERM'); } catch {} 
       }, mode === 'full' ? 1000 * 90 : 1000 * 60);
 
       httpx.stdout.on('data', (chunk: Buffer) => {
         totalBytes += chunk.length;
         if (totalBytes > outputLimitBytes) {
           stderr += 'Output limit exceeded';
-          killAll('SIGTERM');
+          try { httpx.kill('SIGTERM'); } catch {}
         } else {
           stdout += chunk.toString();
         }
       });
-      const collectErr = (procName: string) => (chunk: Buffer) => { stderr += `[${procName}] ${chunk.toString()}`; };
-      subfinder.stderr.on('data', collectErr('subfinder'));
-      httpx.stderr.on('data', collectErr('httpx'));
-
-      await new Promise<void>((resolve, reject) => {
-        let subClosed = false;
-        let httpxClosed = false;
-
-        const maybeDone = () => {
-          if (subClosed && httpxClosed) {
-            clearTimeout(killTimer);
-            resolve();
-          }
-        };
-
-        subfinder.on('error', (err) => {
-          console.error(`subfinder spawn error for ${target}:`, err);
-          killAll('SIGTERM');
-          useSubfinder = false;
-          resolve(); // Fallback to base domain
-        });
-        httpx.on('error', reject);
-
-        subfinder.on('close', (code) => {
-          subClosed = true;
-          // Close httpx stdin to signal EOF when subfinder finishes
-          try { httpx.stdin.end(); } catch {}
-          if (code !== 0 && code !== null && code !== 1) {
-            console.warn(`subfinder exited with code ${code} for ${target}`);
-            useSubfinder = false;
-          }
-          maybeDone();
-        });
-        httpx.on('close', (code) => {
-          httpxClosed = true;
-          if (code !== 0 && code !== null) {
-            clearTimeout(killTimer);
-            // If subfinder failed and httpx also failed, try fallback
-            if (!useSubfinder) {
-              resolve(); // Will try fallback below
-            } else {
-              reject(new Error(`httpx exited with code ${code}: ${stderr}`));
-            }
-          } else {
-            maybeDone();
-          }
-        });
+      httpx.stderr.on('data', (chunk: Buffer) => { 
+        stderr += `[httpx] ${chunk.toString()}`; 
       });
-    } catch (sfErr: any) {
-      console.error(`subfinder failed for ${target}, using base domain fallback:`, sfErr.message || sfErr);
-      useSubfinder = false;
-    }
 
-    // Fallback: if subfinder failed or produced no output, use base domain
-    if (!useSubfinder || stdout.trim().length === 0) {
-      console.log(`Using base domain fallback for ${target}`);
-      const httpx = spawn('httpx', httpxArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
-      const inputDomains = [`https://${target}`, `http://${target}`];
-      
-      let httpxStdout = '';
-      let httpxStderr = '';
-      const httpxTimer = setTimeout(() => { try { httpx.kill('SIGTERM'); } catch {} }, 1000 * 30);
-      
+      // Feed subdomains to httpx
       try {
-        for (const domain of inputDomains) {
-          httpx.stdin.write(domain + '\n');
+        for (const subdomain of subdomains.slice(0, mode === 'full' ? 500 : 200)) {
+          httpx.stdin.write(`https://${subdomain}\n`);
+          httpx.stdin.write(`http://${subdomain}\n`);
         }
         httpx.stdin.end();
-      } catch {}
-      
-      httpx.stdout.on('data', (chunk: Buffer) => { httpxStdout += chunk.toString(); });
-      httpx.stderr.on('data', (chunk: Buffer) => { httpxStderr += chunk.toString(); });
-      
-      await new Promise<void>((resolve, reject) => {
-        httpx.on('error', reject);
+      } catch (writeErr) {
+        console.error('Error writing to httpx stdin:', writeErr);
+      }
+
+      await new Promise<void>((resolve) => {
+        httpx.on('error', (err) => {
+          console.error(`httpx spawn error for ${target}:`, err);
+          clearTimeout(httpxTimer);
+          resolve();
+        });
         httpx.on('close', (code) => {
           clearTimeout(httpxTimer);
           if (code === 0 || code === null) {
-            stdout = httpxStdout;
-            resolve();
+            console.log(`httpx completed successfully for ${target}`);
           } else {
-            // Even if httpx fails, return what we have
-            stdout = httpxStdout;
-            resolve();
+            console.warn(`httpx exited with code ${code} for ${target}, but using output anyway`);
           }
+          resolve();
         });
       });
+    } catch (httpxErr: any) {
+      console.error(`httpx failed for ${target}:`, httpxErr?.message || httpxErr);
     }
 
     const lines = stdout
@@ -226,7 +216,7 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
       .map(l => l.trim())
       .filter(Boolean);
 
-    const results = lines.map((line) => {
+    let results = lines.map((line) => {
       try {
         const obj = JSON.parse(line);
         return {
@@ -241,6 +231,18 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
         return { url: line, host: line, statusCode: null, title: '', technologies: [] };
       }
     });
+
+    // If httpx produced no results but subfinder found subdomains, return them anyway
+    if (results.length === 0 && subdomains.length > 0) {
+      console.log(`httpx produced no results, returning ${subdomains.length} discovered subdomains`);
+      results = subdomains.map(subdomain => ({
+        url: `https://${subdomain}`,
+        host: subdomain,
+        statusCode: null,
+        title: 'Discovered (not probed)',
+        technologies: ['Subdomain Discovery'],
+      }));
+    }
 
     res.json({ target, count: results.length, results });
   } catch (err: any) {
