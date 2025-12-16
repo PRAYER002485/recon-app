@@ -53,6 +53,20 @@ app.use(cors({
 // Express 5 no longer accepts '*' path patterns; CORS middleware above already handles preflight
 // Validate domain/hostname strictly
 const hostnameRegex = /^(?=.{1,253}$)(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)\.)+[a-zA-Z]{2,}$/;
+
+// Helper function to validate domain names and filter out error messages
+function isValidDomain(line: string): boolean {
+  // Filter out error messages, paths, and invalid strings
+  if (!line || line.length === 0) return false;
+  if (line.includes('/') || line.includes('\\')) return false; // Paths
+  if (line.includes('no such file') || line.includes('error') || line.includes('Error')) return false;
+  if (line.startsWith('open ') || line.startsWith('failed') || line.startsWith('cannot')) return false;
+  if (line.includes('.config') || line.includes('.yaml')) return false; // Config file paths
+  if (line.includes('getaddrinfo') || line.includes('ENOTFOUND')) return false; // DNS errors
+  // Basic domain validation: should contain at least one dot and valid characters
+  const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+  return domainRegex.test(line);
+}
 const ReconQuery = z.object({
   target: z.string().trim().toLowerCase().regex(hostnameRegex, 'Invalid domain'),
   mode: z.enum(['fast', 'full']).optional(),
@@ -131,20 +145,39 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
         });
         subfinder.on('close', (code) => {
           clearTimeout(subfinderTimer);
+          
+          // Check if there are errors in stderr
+          const hasConfigError = subfinderStderr.includes('config.yaml') || subfinderStderr.includes('no such file');
+          if (hasConfigError) {
+            console.warn(`subfinder config error for ${target}: ${subfinderStderr.substring(0, 200)}`);
+          }
+
           if (code === 0 || code === null) {
-            // Success - parse subdomains
+            // Success - parse subdomains and filter out errors
             subdomains = Array.from(new Set(
-              subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+              subfinderStdout.split('\n')
+                .map(l => l.trim())
+                .filter(Boolean)
+                .filter(isValidDomain)
             ));
-            console.log(`subfinder found ${subdomains.length} subdomains for ${target}`);
+            if (subdomains.length > 0) {
+              console.log(`subfinder found ${subdomains.length} subdomains for ${target}`);
+            } else {
+              console.warn(`subfinder completed but found no valid domains. stdout: "${subfinderStdout.substring(0, 200)}", stderr: "${subfinderStderr.substring(0, 200)}"`);
+            }
           } else {
             console.warn(`subfinder exited with code ${code} for ${target}: ${subfinderStderr || 'no stderr'}`);
-            // Still try to parse any output we got
+            // Still try to parse any output we got, but filter errors
             subdomains = Array.from(new Set(
-              subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+              subfinderStdout.split('\n')
+                .map(l => l.trim())
+                .filter(Boolean)
+                .filter(isValidDomain)
             ));
             if (subdomains.length > 0) {
               console.log(`subfinder found ${subdomains.length} subdomains despite exit code ${code}`);
+            } else {
+              console.warn(`subfinder output contained no valid domains. stdout: "${subfinderStdout.substring(0, 200)}", stderr: "${subfinderStderr.substring(0, 200)}"`);
             }
           }
           resolve();
@@ -441,7 +474,7 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
       });
 
       hosts = Array.from(new Set(
-        sfOut.split('\n').map(l => l.trim()).filter(Boolean)
+        sfOut.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
       )).slice(0, maxHosts);
     } catch (sfErr: any) {
       console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
@@ -887,7 +920,7 @@ app.post('/api/ssl-check', reconLimiter, async (req, res) => {
       });
 
       subdomains = Array.from(new Set(
-        subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+        subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
       )).slice(0, mode === 'full' ? 200 : 100);
     } catch (sfErr: any) {
       console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
@@ -1065,7 +1098,7 @@ app.post('/api/urls-scan', reconLimiter, async (req, res) => {
       // Process output only if we got some
       if (subfinderStdout && subfinderStdout.trim().length > 0) {
         subdomains = Array.from(new Set(
-          subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+          subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
         )).slice(0, mode === 'full' ? 100 : 50);
       }
     } catch (sfErr: any) {
@@ -1250,7 +1283,9 @@ app.post('/api/headers-check', reconLimiter, async (req, res) => {
         });
       });
 
-      subdomains = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, mode === 'full' ? 150 : 60);
+      subdomains = Array.from(new Set(
+        sfOut.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
+      )).slice(0, mode === 'full' ? 150 : 60);
     } catch (sfErr: any) {
       console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
     }
@@ -1262,8 +1297,11 @@ app.post('/api/headers-check', reconLimiter, async (req, res) => {
     }
     const urls: string[] = [];
     for (const h of subdomains) {
-      urls.push(`https://${h}`);
-      urls.push(`http://${h}`);
+      // Only add valid domains to avoid "Invalid URL" errors
+      if (isValidDomain(h) && hostnameRegex.test(h)) {
+        urls.push(`https://${h}`);
+        urls.push(`http://${h}`);
+      }
     }
 
     type HeaderFinding = {
@@ -1293,15 +1331,29 @@ app.post('/api/headers-check', reconLimiter, async (req, res) => {
     const toProbe = urls.slice(0, max);
     for (const u of toProbe) {
       try {
+        // Validate URL before processing
+        let urlObj: URL;
+        try {
+          urlObj = new URL(u);
+        } catch (urlErr) {
+          console.warn(`Invalid URL skipped in headers-check: ${u}`);
+          continue; // Skip invalid URLs
+        }
+        
         const r = await fetchWithTimeout(u);
         const lc = new Map<string, string>();
         r.headers.forEach((v, k) => lc.set(k.toLowerCase(), v));
         const missing = checks.filter(h => !lc.has(h));
         const present = checks.filter(h => lc.has(h)).map(h => `${h}:present`);
         const title = `${missing.length === 0 ? 'All headers present' : `Missing: ${missing.join(', ')}`}`;
-        results.push({ url: u, host: new URL(u).hostname, statusCode: r.status, title, technologies: present });
+        results.push({ url: u, host: urlObj.hostname, statusCode: r.status, title, technologies: present });
       } catch (e: any) {
-        results.push({ url: u, host: new URL(u).hostname, statusCode: null, title: `Error: ${(e && (e.message || String(e))) || 'request failed'}`, technologies: [] });
+        // Try to extract hostname safely
+        let hostname = 'unknown';
+        try {
+          hostname = new URL(u).hostname;
+        } catch {}
+        results.push({ url: u, host: hostname, statusCode: null, title: `Error: ${(e && (e.message || String(e))) || 'request failed'}`, technologies: [] });
       }
     }
 
@@ -1470,12 +1522,16 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
         subfinder.on('error', () => resolve());
         subfinder.on('close', () => { clearTimeout(sfTimer); resolve(); });
       });
-      const subs = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, 50);
+      const subs = Array.from(new Set(
+        sfOut.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
+      )).slice(0, 50);
       for (const s of subs) {
         const h = s.replace(/^\*\.?/, '').replace(/^www\./, '');
-        nameCandidatesSet.add(h);
-        nameCandidatesSet.add(h.replace(/\./g, '-'));
-        nameCandidatesSet.add(h.split('.').join(''));
+        if (isValidDomain(h)) {
+          nameCandidatesSet.add(h);
+          nameCandidatesSet.add(h.replace(/\./g, '-'));
+          nameCandidatesSet.add(h.split('.').join(''));
+        }
       }
     } catch {}
 
