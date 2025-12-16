@@ -11,6 +11,7 @@ import cors from 'cors';
 import * as tls from 'tls';
 import * as dns from 'dns';
 import { promisify } from 'util';
+import { existsSync } from 'fs';
 const app = express();
 
 // Ensure PATH contains common locations for CLI tools (e.g., ProjectDiscovery binaries in GOPATH)
@@ -99,70 +100,126 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
       ? ['-silent', '-json', '-title', '-status-code', '-tech-detect', '-threads', '50', '-timeout', '10', '-retries', '2']
       : ['-silent', '-json', '-title', '-status-code', '-tech-detect', '-threads', '150', '-timeout', '5', '-retries', '1'];
 
-    // Spawn without shell and pipe safely
-    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const httpx = spawn('httpx', httpxArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-    // Pipe subfinder output into httpx input
-    subfinder.stdout.pipe(httpx.stdin);
-
     let stdout = '';
     let stderr = '';
     const outputLimitBytes = 5 * 1024 * 1024; // 5MB cap
     let totalBytes = 0;
 
-    const killAll = (signal: NodeJS.Signals = 'SIGTERM') => {
-      subfinder.kill(signal);
-      httpx.kill(signal);
-    };
+    // Try subfinder first, fallback to base domain if it fails
+    let useSubfinder = true;
+    try {
+      const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const httpx = spawn('httpx', httpxArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    const killTimer = setTimeout(() => {
-      killAll('SIGTERM');
-    }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+      // Pipe subfinder output into httpx input
+      subfinder.stdout.pipe(httpx.stdin);
 
-    httpx.stdout.on('data', (chunk: Buffer) => {
-      totalBytes += chunk.length;
-      if (totalBytes > outputLimitBytes) {
-        stderr += 'Output limit exceeded';
-        killAll('SIGTERM');
-      } else {
-        stdout += chunk.toString();
-      }
-    });
-    const collectErr = (procName: string) => (chunk: Buffer) => { stderr += `[${procName}] ${chunk.toString()}`; };
-    subfinder.stderr.on('data', collectErr('subfinder'));
-    httpx.stderr.on('data', collectErr('httpx'));
-
-    await new Promise<void>((resolve, reject) => {
-      let subClosed = false;
-      let httpxClosed = false;
-
-      const maybeDone = () => {
-        if (subClosed && httpxClosed) {
-          clearTimeout(killTimer);
-          resolve();
-        }
+      const killAll = (signal: NodeJS.Signals = 'SIGTERM') => {
+        try { subfinder.kill(signal); } catch {}
+        try { httpx.kill(signal); } catch {}
       };
 
-      subfinder.on('error', reject);
-      httpx.on('error', reject);
+      const killTimer = setTimeout(() => {
+        killAll('SIGTERM');
+      }, mode === 'full' ? 1000 * 90 : 1000 * 60);
 
-      subfinder.on('close', (_code) => {
-        subClosed = true;
-        // Close httpx stdin to signal EOF when subfinder finishes
-        try { httpx.stdin.end(); } catch {}
-        maybeDone();
-      });
-      httpx.on('close', (code) => {
-        httpxClosed = true;
-        if (code !== 0 && code !== null) {
-          clearTimeout(killTimer);
-          reject(new Error(`httpx exited with code ${code}: ${stderr}`));
+      httpx.stdout.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > outputLimitBytes) {
+          stderr += 'Output limit exceeded';
+          killAll('SIGTERM');
         } else {
-          maybeDone();
+          stdout += chunk.toString();
         }
       });
-    });
+      const collectErr = (procName: string) => (chunk: Buffer) => { stderr += `[${procName}] ${chunk.toString()}`; };
+      subfinder.stderr.on('data', collectErr('subfinder'));
+      httpx.stderr.on('data', collectErr('httpx'));
+
+      await new Promise<void>((resolve, reject) => {
+        let subClosed = false;
+        let httpxClosed = false;
+
+        const maybeDone = () => {
+          if (subClosed && httpxClosed) {
+            clearTimeout(killTimer);
+            resolve();
+          }
+        };
+
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          killAll('SIGTERM');
+          useSubfinder = false;
+          resolve(); // Fallback to base domain
+        });
+        httpx.on('error', reject);
+
+        subfinder.on('close', (code) => {
+          subClosed = true;
+          // Close httpx stdin to signal EOF when subfinder finishes
+          try { httpx.stdin.end(); } catch {}
+          if (code !== 0 && code !== null && code !== 1) {
+            console.warn(`subfinder exited with code ${code} for ${target}`);
+            useSubfinder = false;
+          }
+          maybeDone();
+        });
+        httpx.on('close', (code) => {
+          httpxClosed = true;
+          if (code !== 0 && code !== null) {
+            clearTimeout(killTimer);
+            // If subfinder failed and httpx also failed, try fallback
+            if (!useSubfinder) {
+              resolve(); // Will try fallback below
+            } else {
+              reject(new Error(`httpx exited with code ${code}: ${stderr}`));
+            }
+          } else {
+            maybeDone();
+          }
+        });
+      });
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}, using base domain fallback:`, sfErr.message || sfErr);
+      useSubfinder = false;
+    }
+
+    // Fallback: if subfinder failed or produced no output, use base domain
+    if (!useSubfinder || stdout.trim().length === 0) {
+      console.log(`Using base domain fallback for ${target}`);
+      const httpx = spawn('httpx', httpxArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const inputDomains = [`https://${target}`, `http://${target}`];
+      
+      let httpxStdout = '';
+      let httpxStderr = '';
+      const httpxTimer = setTimeout(() => { try { httpx.kill('SIGTERM'); } catch {} }, 1000 * 30);
+      
+      try {
+        for (const domain of inputDomains) {
+          httpx.stdin.write(domain + '\n');
+        }
+        httpx.stdin.end();
+      } catch {}
+      
+      httpx.stdout.on('data', (chunk: Buffer) => { httpxStdout += chunk.toString(); });
+      httpx.stderr.on('data', (chunk: Buffer) => { httpxStderr += chunk.toString(); });
+      
+      await new Promise<void>((resolve, reject) => {
+        httpx.on('error', reject);
+        httpx.on('close', (code) => {
+          clearTimeout(httpxTimer);
+          if (code === 0 || code === null) {
+            stdout = httpxStdout;
+            resolve();
+          } else {
+            // Even if httpx fails, return what we have
+            stdout = httpxStdout;
+            resolve();
+          }
+        });
+      });
+    }
 
     const lines = stdout
       .split('\n')
@@ -359,22 +416,40 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
 
   try {
     // 1) subfinder -silent -d <target>
-    const subfinder = spawn('subfinder', ['-silent', '-d', target], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let sfOut = '';
-    let sfErr = '';
-    subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
-    subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
-    await new Promise<void>((resolve, reject) => {
-      subfinder.on('error', reject);
-      subfinder.on('close', (code) => {
-        if (code === 0 || code === null) resolve();
-        else reject(new Error(`subfinder exited with code ${code}: ${sfErr}`));
+    let hosts: string[] = [];
+    try {
+      const subfinder = spawn('subfinder', ['-silent', '-d', target], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let sfOut = '';
+      let sfErr = '';
+      subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
+      subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
+      await new Promise<void>((resolve) => {
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          resolve(); // Continue with fallback
+        });
+        subfinder.on('close', (code) => {
+          if (code === 0 || code === null) {
+            resolve();
+          } else {
+            console.warn(`subfinder exited with code ${code} for ${target}: ${sfErr || 'no stderr'}`);
+            resolve(); // Continue with fallback instead of rejecting
+          }
+        });
       });
-    });
 
-    const hosts = Array.from(new Set(
-      sfOut.split('\n').map(l => l.trim()).filter(Boolean)
-    )).slice(0, maxHosts);
+      hosts = Array.from(new Set(
+        sfOut.split('\n').map(l => l.trim()).filter(Boolean)
+      )).slice(0, maxHosts);
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
+    }
+    
+    // Fallback to base domain if subfinder found nothing
+    if (hosts.length === 0) {
+      hosts = [target];
+      console.log(`No subdomains found for ${target}, using base domain`);
+    }
 
     // 2) scan by hostname directly to preserve SNI; skip A record resolution here
 
@@ -778,31 +853,49 @@ app.post('/api/ssl-check', reconLimiter, async (req, res) => {
 
   try {
     // First, discover subdomains using subfinder
-    const subfinderArgs = mode === 'full'
-      ? ['-silent', '-all', '-d', target]
-      : ['-silent', '-d', target];
+    let subdomains: string[] = [];
+    try {
+      const subfinderArgs = mode === 'full'
+        ? ['-silent', '-all', '-d', target]
+        : ['-silent', '-d', target];
 
-    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    
-    let subfinderStdout = '';
-    let subfinderStderr = '';
-    const subfinderTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+      const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      
+      let subfinderStdout = '';
+      let subfinderStderr = '';
+      const subfinderTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
 
-    subfinder.stdout.on('data', (chunk: Buffer) => { subfinderStdout += chunk.toString(); });
-    subfinder.stderr.on('data', (chunk: Buffer) => { subfinderStderr += chunk.toString(); });
+      subfinder.stdout.on('data', (chunk: Buffer) => { subfinderStdout += chunk.toString(); });
+      subfinder.stderr.on('data', (chunk: Buffer) => { subfinderStderr += chunk.toString(); });
 
-    await new Promise<void>((resolve, reject) => {
-      subfinder.on('error', reject);
-      subfinder.on('close', (code) => {
-        clearTimeout(subfinderTimer);
-        if (code === 0 || code === null) resolve();
-        else reject(new Error(`subfinder exited with code ${code}: ${subfinderStderr}`));
+      await new Promise<void>((resolve, reject) => {
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          resolve(); // Continue with fallback
+        });
+        subfinder.on('close', (code) => {
+          clearTimeout(subfinderTimer);
+          if (code === 0 || code === null) {
+            resolve();
+          } else {
+            console.warn(`subfinder exited with code ${code} for ${target}: ${subfinderStderr || 'no stderr'}`);
+            resolve(); // Continue with fallback instead of rejecting
+          }
+        });
       });
-    });
 
-    const subdomains = Array.from(new Set(
-      subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
-    )).slice(0, mode === 'full' ? 200 : 100);
+      subdomains = Array.from(new Set(
+        subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+      )).slice(0, mode === 'full' ? 200 : 100);
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
+    }
+    
+    // Fallback to base domain if subfinder found nothing
+    if (subdomains.length === 0) {
+      subdomains = [target];
+      console.log(`No subdomains found for ${target}, using base domain`);
+    }
 
     // Check SSL certificates for each subdomain
     const sslChecks: Promise<SSLInfo>[] = [];
@@ -926,31 +1019,64 @@ app.post('/api/urls-scan', reconLimiter, async (req, res) => {
 
   try {
     // First, discover subdomains using subfinder
-    const subfinderArgs = mode === 'full'
-      ? ['-silent', '-all', '-d', target]
-      : ['-silent', '-d', target];
-
-    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    
+    let subdomains: string[] = [];
     let subfinderStdout = '';
     let subfinderStderr = '';
-    const subfinderTimer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+    
+    try {
+      const subfinderArgs = mode === 'full'
+        ? ['-silent', '-all', '-d', target]
+        : ['-silent', '-d', target];
 
-    subfinder.stdout.on('data', (chunk: Buffer) => { subfinderStdout += chunk.toString(); });
-    subfinder.stderr.on('data', (chunk: Buffer) => { subfinderStderr += chunk.toString(); });
+      const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      
+      const subfinderTimer = setTimeout(() => { 
+        try { 
+          subfinder.kill('SIGTERM'); 
+        } catch {} 
+      }, mode === 'full' ? 1000 * 90 : 1000 * 60);
 
-    await new Promise<void>((resolve, reject) => {
-      subfinder.on('error', reject);
-      subfinder.on('close', (code) => {
-        clearTimeout(subfinderTimer);
-        if (code === 0 || code === null) resolve();
-        else reject(new Error(`subfinder exited with code ${code}: ${subfinderStderr}`));
+      subfinder.stdout.on('data', (chunk: Buffer) => { 
+        subfinderStdout += chunk.toString(); 
       });
-    });
+      subfinder.stderr.on('data', (chunk: Buffer) => { 
+        subfinderStderr += chunk.toString(); 
+      });
 
-    const subdomains = Array.from(new Set(
-      subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
-    )).slice(0, mode === 'full' ? 100 : 50);
+      await new Promise<void>((resolve) => {
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          clearTimeout(subfinderTimer);
+          resolve(); // Continue with fallback
+        });
+        subfinder.on('close', (code) => {
+          clearTimeout(subfinderTimer);
+          if (code === 0 || code === null) {
+            resolve();
+          } else {
+            console.warn(`subfinder exited with code ${code} for ${target}: ${subfinderStderr || 'no stderr'}`);
+            resolve(); // Continue with fallback instead of rejecting
+          }
+        });
+      });
+
+      // Process output only if we got some
+      if (subfinderStdout && subfinderStdout.trim().length > 0) {
+        subdomains = Array.from(new Set(
+          subfinderStdout.split('\n').map(l => l.trim()).filter(Boolean)
+        )).slice(0, mode === 'full' ? 100 : 50);
+      }
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}, using base domain only:`, sfErr?.message || sfErr);
+      // Ensure subdomains is initialized
+      subdomains = [];
+    }
+    
+    // Fallback to base domain if subfinder found nothing
+    if (!subdomains || subdomains.length === 0) {
+      subdomains = [target];
+      console.log(`No subdomains found for ${target}, using base domain`);
+    }
 
     // Fetch historical URLs from Wayback Machine for each subdomain
     const waybackPromises: Promise<{ subdomain: string; urls: string[] }>[] = [];
@@ -960,7 +1086,14 @@ app.post('/api/urls-scan', reconLimiter, async (req, res) => {
       const batch = subdomains.slice(i, i + maxConcurrent);
       const batchPromises = batch.map(async (subdomain) => {
         try {
-          const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=*.${subdomain}/*&collapse=urlkey&output=text&fl=original`;
+          // Construct wayback URL - use wildcard pattern for subdomains
+          // For base domain, search for the domain itself and all subdomains
+          const searchPattern = subdomain === target 
+            ? `${subdomain}/*` 
+            : `*.${subdomain}/*`;
+          
+          const waybackUrl = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(searchPattern)}&collapse=urlkey&output=text&fl=original&limit=${mode === 'full' ? 100 : 50}`;
+          
           const response = await fetch(waybackUrl, {
             method: 'GET',
             headers: {
@@ -970,25 +1103,38 @@ app.post('/api/urls-scan', reconLimiter, async (req, res) => {
           });
           
           if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            // Don't throw, just return empty results
+            console.warn(`Wayback Machine HTTP ${response.status} for ${subdomain}`);
+            return { subdomain, urls: [] };
           }
           
           const text = await response.text();
+          if (!text || text.trim().length === 0) {
+            return { subdomain, urls: [] };
+          }
+          
           const urls = text.split('\n')
             .map(line => line.trim())
             .filter(line => line && line.startsWith('http'))
             .slice(0, mode === 'full' ? 100 : 50); // Limit results
           
           return { subdomain, urls };
-        } catch (error) {
-          console.error(`Wayback Machine fetch failed for ${subdomain}:`, error);
+        } catch (error: any) {
+          // Log but don't fail - return empty results
+          console.error(`Wayback Machine fetch failed for ${subdomain}:`, error?.message || error);
           return { subdomain, urls: [] };
         }
       });
       waybackPromises.push(...batchPromises);
     }
 
-    const waybackResults = await Promise.all(waybackPromises);
+    // Use Promise.allSettled to handle individual failures gracefully
+    const waybackSettled = await Promise.allSettled(waybackPromises);
+    const waybackResults = waybackSettled
+      .filter((result): result is PromiseFulfilledResult<{ subdomain: string; urls: string[] }> => 
+        result.status === 'fulfilled'
+      )
+      .map(result => result.value);
 
     // Format results for frontend - group by subdomain
     const results: any[] = [];
@@ -1031,16 +1177,26 @@ app.post('/api/urls-scan', reconLimiter, async (req, res) => {
       index === self.findIndex(r => r.url === result.url)
     ).slice(0, mode === 'full' ? 500 : 200);
 
+    // Always return a valid response, even if no results
     res.json({ 
       target, 
       count: uniqueResults.length, 
       results: uniqueResults,
       totalSubdomains: subdomains.length,
-      subdomainsWithHistory: waybackResults.filter(r => r.urls.length > 0).length
+      subdomainsWithHistory: waybackResults.filter(r => r && r.urls && r.urls.length > 0).length
     });
   } catch (err: any) {
-    console.error(err);
-    res.status(500).json({ error: 'URLs scan failed', message: err.shortMessage || err.message || String(err) });
+    console.error('URLs scan error:', err);
+    // Always return a valid response structure
+    res.status(500).json({ 
+      error: 'URLs scan failed', 
+      message: err?.shortMessage || err?.message || String(err),
+      target: target || 'unknown',
+      count: 0,
+      results: [],
+      totalSubdomains: 0,
+      subdomainsWithHistory: 0
+    });
   }
 });
 
@@ -1065,21 +1221,43 @@ app.post('/api/headers-check', reconLimiter, async (req, res) => {
   }
 
   try {
-    const subfinderArgs = mode === 'full'
-      ? ['-silent', '-all', '-d', target]
-      : ['-silent', '-d', target];
-    const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let sfOut = '';
-    let sfErr = '';
-    const timer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
-    subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
-    subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
-    await new Promise<void>((resolve, reject) => {
-      subfinder.on('error', reject);
-      subfinder.on('close', (code) => { clearTimeout(timer); (code === 0 || code === null) ? resolve() : reject(new Error(`subfinder exited with code ${code}: ${sfErr}`)); });
-    });
+    let subdomains: string[] = [];
+    try {
+      const subfinderArgs = mode === 'full'
+        ? ['-silent', '-all', '-d', target]
+        : ['-silent', '-d', target];
+      const subfinder = spawn('subfinder', subfinderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let sfOut = '';
+      let sfErr = '';
+      const timer = setTimeout(() => { try { subfinder.kill('SIGTERM'); } catch {} }, mode === 'full' ? 1000 * 90 : 1000 * 60);
+      subfinder.stdout.on('data', (c: Buffer) => { sfOut += c.toString(); });
+      subfinder.stderr.on('data', (c: Buffer) => { sfErr += c.toString(); });
+      await new Promise<void>((resolve) => {
+        subfinder.on('error', (err) => {
+          console.error(`subfinder spawn error for ${target}:`, err);
+          resolve(); // Continue with fallback
+        });
+        subfinder.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0 || code === null) {
+            resolve();
+          } else {
+            console.warn(`subfinder exited with code ${code} for ${target}: ${sfErr || 'no stderr'}`);
+            resolve(); // Continue with fallback instead of rejecting
+          }
+        });
+      });
 
-    const subdomains = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, mode === 'full' ? 150 : 60);
+      subdomains = Array.from(new Set(sfOut.split('\n').map(l => l.trim()).filter(Boolean))).slice(0, mode === 'full' ? 150 : 60);
+    } catch (sfErr: any) {
+      console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
+    }
+    
+    // Fallback to base domain if subfinder found nothing
+    if (subdomains.length === 0) {
+      subdomains = [target];
+      console.log(`No subdomains found for ${target}, using base domain`);
+    }
     const urls: string[] = [];
     for (const h of subdomains) {
       urls.push(`https://${h}`);
@@ -1309,9 +1487,21 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
         const r = await fetch(u, { method: 'GET', headers: { 'User-Agent': 'ReconApp/1.0' }, signal: AbortSignal.timeout(8000) });
         const text = await r.text().catch(() => '');
         const open = r.ok && /<ListBucketResult|<EnumerationResults|<Error>|\{"kind":"storage#objects"/.test(text);
-        findings.push({ url: u, host: new URL(u).host, statusCode: r.status, title: `${label}: ${open ? 'Public or queryable' : 'Not public'} (${r.status})`, technologies: [label] });
+        let host = '';
+        try {
+          host = new URL(u).host;
+        } catch {
+          host = u.split('/')[2] || u;
+        }
+        findings.push({ url: u, host, statusCode: r.status, title: `${label}: ${open ? 'Public or queryable' : 'Not public'} (${r.status})`, technologies: [label] });
       } catch (e: any) {
-        findings.push({ url: u, host: new URL(u).host, statusCode: null, title: `${label}: error ${(e && (e.message || String(e))) || 'failed'}` , technologies: [label]});
+        let host = '';
+        try {
+          host = new URL(u).host;
+        } catch {
+          host = u.split('/')[2] || u;
+        }
+        findings.push({ url: u, host, statusCode: null, title: `${label}: error ${(e && (e.message || String(e))) || 'failed'}` , technologies: [label]});
       }
     }
 
@@ -1371,17 +1561,21 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4000;
-// Serve frontend build (single URL)
+// Serve frontend build (optional - only if it exists, since frontend is deployed separately)
 const frontendDist = path.resolve(__dirname, '../../frontend/dist');
+if (existsSync(frontendDist)) {
 app.use(express.static(frontendDist));
-
 // Only after API routes are defined: catch-all to index.html for SPA routing
 // Use a regex that excludes /api to avoid clobbering API endpoints and avoid path-to-regexp issues
 app.get(/^(?!\/api).*/, (_req, res) => {
   res.sendFile(path.join(frontendDist, 'index.html'));
 });
+} else {
+  // Frontend not available - that's okay, it's deployed separately
+  console.log('Frontend dist not found - serving API only');
+}
 
-app.listen(PORT, () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Backend listening on http://0.0.0.0:${PORT}`);
 });
 
