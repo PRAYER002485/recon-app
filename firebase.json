@@ -2,7 +2,6 @@
   "hosting": {
     "public": "frontend/dist",
     "rewrites": [
-      { "source": "/api/**", "run": { "serviceId": "recon-backend", "region": "us-central1" } },
       { "source": "**", "destination": "/index.html" }
     ]
   }

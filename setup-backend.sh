@@ -24,7 +24,8 @@ echo ""
 
 # Update frontend environment
 echo "📝 Updating frontend environment..."
-echo "VITE_API_BASE=$BACKEND_URL" > /root/Desktop/Internship/recon-app/frontend/.env.production
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "VITE_API_BASE=$BACKEND_URL" > "$SCRIPT_DIR/frontend/.env.production"
 
 echo "✅ Frontend environment updated!"
 echo ""
