@@ -29,28 +29,56 @@ ENV SUBFINDER_VERSION=v2.10.1
 RUN set -eux; \
   curl -fL --retry 3 -o subfinder.zip \
   https://github.com/projectdiscovery/subfinder/releases/download/${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION#v}_linux_amd64.zip; \
-  mkdir -p /tmp/subfinder && unzip subfinder.zip -d /tmp/subfinder; \
-  install -m 0755 $(find /tmp/subfinder -type f -name subfinder | head -n1) /usr/local/bin/subfinder; \
+  mkdir -p /tmp/subfinder && unzip -q subfinder.zip -d /tmp/subfinder; \
+  BINARY=$(find /tmp/subfinder -type f -name subfinder | head -n1); \
+  if [ -z "$BINARY" ]; then \
+    echo "Error: subfinder binary not found in archive"; \
+    ls -la /tmp/subfinder; \
+    exit 1; \
+  fi; \
+  install -m 0755 "$BINARY" /usr/local/bin/subfinder; \
+  /usr/local/bin/subfinder -version || echo "Warning: subfinder version check failed"; \
   rm -rf /tmp/subfinder subfinder.zip
 
 RUN set -eux; \
   curl -fL --retry 3 -o httpx.zip https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.zip; \
-  mkdir -p /tmp/httpx && unzip httpx.zip -d /tmp/httpx; \
-  install -m 0755 $(find /tmp/httpx -type f -name httpx | head -n1) /usr/local/bin/httpx; \
+  mkdir -p /tmp/httpx && unzip -q httpx.zip -d /tmp/httpx; \
+  BINARY=$(find /tmp/httpx -type f -name httpx | head -n1); \
+  if [ -z "$BINARY" ]; then \
+    echo "Error: httpx binary not found in archive"; \
+    ls -la /tmp/httpx; \
+    exit 1; \
+  fi; \
+  install -m 0755 "$BINARY" /usr/local/bin/httpx; \
+  /usr/local/bin/httpx -version || echo "Warning: httpx version check failed"; \
   rm -rf /tmp/httpx httpx.zip
 
 # naabu (port scanner)
 RUN set -eux; \
   curl -fL --retry 3 -o naabu.zip https://github.com/projectdiscovery/naabu/releases/download/${NAABU_VERSION}/naabu_${NAABU_VERSION#v}_linux_amd64.zip; \
-  mkdir -p /tmp/naabu && unzip naabu.zip -d /tmp/naabu; \
-  install -m 0755 $(find /tmp/naabu -type f -name naabu | head -n1) /usr/local/bin/naabu; \
+  mkdir -p /tmp/naabu && unzip -q naabu.zip -d /tmp/naabu; \
+  BINARY=$(find /tmp/naabu -type f -name naabu | head -n1); \
+  if [ -z "$BINARY" ]; then \
+    echo "Error: naabu binary not found in archive"; \
+    ls -la /tmp/naabu; \
+    exit 1; \
+  fi; \
+  install -m 0755 "$BINARY" /usr/local/bin/naabu; \
+  /usr/local/bin/naabu -version || echo "Warning: naabu version check failed"; \
   rm -rf /tmp/naabu naabu.zip
 
 # katana (crawler)
 RUN set -eux; \
   curl -fL --retry 3 -o katana.zip https://github.com/projectdiscovery/katana/releases/download/${KATANA_VERSION}/katana_${KATANA_VERSION#v}_linux_amd64.zip; \
-  mkdir -p /tmp/katana && unzip katana.zip -d /tmp/katana; \
-  install -m 0755 $(find /tmp/katana -type f -name katana | head -n1) /usr/local/bin/katana; \
+  mkdir -p /tmp/katana && unzip -q katana.zip -d /tmp/katana; \
+  BINARY=$(find /tmp/katana -type f -name katana | head -n1); \
+  if [ -z "$BINARY" ]; then \
+    echo "Error: katana binary not found in archive"; \
+    ls -la /tmp/katana; \
+    exit 1; \
+  fi; \
+  install -m 0755 "$BINARY" /usr/local/bin/katana; \
+  /usr/local/bin/katana -version || echo "Warning: katana version check failed"; \
   rm -rf /tmp/katana katana.zip
 
 # --- Runtime stage -----------------------------------------------------------
@@ -73,10 +101,32 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nmap dnsutils curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user and drop privileges
+# Create non-root user first
 RUN groupadd -g 1001 nodeapp \
  && useradd -r -u 1001 -g nodeapp nodeapp \
- && chown -R nodeapp:nodeapp /app
+ && mkdir -p /home/nodeapp \
+ && chown -R nodeapp:nodeapp /app /home/nodeapp
+
+# Make sure HOME points at the nodeapp home so subfinder/httpx look in the right
+# place for their config under $HOME/.config/...
+ENV HOME=/home/nodeapp
+
+# Create subfinder config directory and default config file under $HOME
+RUN mkdir -p "$HOME/.config/subfinder" && \
+    echo "# Subfinder Configuration" > "$HOME/.config/subfinder/config.yaml" && \
+    echo "# Default config - subfinder will use passive sources" >> "$HOME/.config/subfinder/config.yaml" && \
+    chown -R nodeapp:nodeapp "$HOME/.config"
+
+# Verify all tools are accessible (don't fail build if version check fails)
+RUN echo "Verifying tools..." && \
+    (which subfinder && (subfinder -version || subfinder -h || echo "subfinder found")) || echo "WARNING: subfinder not found" && \
+    (which httpx && (httpx -version || httpx -h || echo "httpx found")) || echo "WARNING: httpx not found" && \
+    (which naabu && (naabu -version || naabu -h || echo "naabu found")) || echo "WARNING: naabu not found" && \
+    (which katana && (katana -version || katana -h || echo "katana found")) || echo "WARNING: katana not found" && \
+    (which nmap && nmap --version || echo "WARNING: nmap not found") && \
+    echo "Tool verification complete"
+
+# Switch to non-root user
 USER nodeapp
 
 ENV PORT=8080
