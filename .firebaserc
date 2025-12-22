@@ -1,6 +1,7 @@
 {
   "projects": {
-    "new": "techificail"
+    "new": "techificail",
+    "build": "techificial-38f35"
   },
   "targets": {},
   "etags": {}
