@@ -2,14 +2,23 @@ import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported } from "firebase/analytics";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyC4wsZNO1mNe6XK-duwWAEa0qfA3BbTHF0",
-  authDomain: "techificail.firebaseapp.com",
-  projectId: "techificail",
-  storageBucket: "techificail.appspot.com", // likely this, see note below
-  messagingSenderId: "40821731391",
-  appId: "1:40821731391:web:43d5422417cc1ec533888a",
-  measurementId: "G-QDTTLMXJWB"
+
+  apiKey: "AIzaSyDOKNf--eUaYasLNeT4ZsmhXKZKr9utbSc",
+
+  authDomain: "techificial-38f35.firebaseapp.com",
+
+  projectId: "techificial-38f35",
+
+  storageBucket: "techificial-38f35.firebasestorage.app",
+
+  messagingSenderId: "646954665066",
+
+  appId: "1:646954665066:web:d4e6b7ebdd0d2d4cf13613",
+
+  measurementId: "G-9151ZF48W9"
+
 };
+
 export const app = initializeApp(firebaseConfig);
 export const analytics = (typeof globalThis !== "undefined" && typeof (globalThis as any).window !== "undefined")
   ? await (async () => (await isSupported()) ? getAnalytics(app) : undefined)()

@@ -38,7 +38,7 @@ const allowedOriginsEnv = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
-const defaultOrigins = ['https://techificail.web.app', 'https://techificail.firebaseapp.com'];
+const defaultOrigins = ['https://techificial-38f35.web.app', 'https://techificial-38f35.firebaseapp.com'];
 const allowList = Array.from(new Set([...defaultOrigins, ...allowedOriginsEnv]));
 app.use(cors({
   origin: (origin, callback) => {
