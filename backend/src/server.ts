@@ -444,10 +444,12 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
   const { target } = parse.data;
   const mode = parse.data.mode || 'fast';
 
-  // limits to keep runtime sane
-  const maxHosts = mode === 'full' ? 200 : 50;
+  // limits to keep runtime sane while still scanning a broad set of subdomains
+  const maxHosts = mode === 'full' ? 300 : 120;
   // Allow more time per host so nmap can complete service detection and scripts
   const nmapTimeoutMs = mode === 'full' ? 1000 * 300 : 1000 * 60;
+  // Centralized port selection for nmap vuln scanning (covers common web + ssh/ftp/mysql)
+  const nmapPorts = '21,22,80,443,8080,8000,8443,3306';
 
   try {
     // 1) subfinder -silent -d <target>
@@ -475,7 +477,7 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
 
       hosts = Array.from(new Set(
         sfOut.split('\n').map(l => l.trim()).filter(Boolean).filter(isValidDomain)
-      )).slice(0, maxHosts);
+      ));
     } catch (sfErr: any) {
       console.error(`subfinder failed for ${target}, using base domain only:`, sfErr.message || sfErr);
     }
@@ -488,7 +490,13 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
 
     // 2) scan by hostname directly to preserve SNI; skip A record resolution here
 
-    // 3) run nmap -p- -sV -O <host> --script vuln*
+    // Truncate hosts if subfinder returned too many to keep scan time reasonable
+    const hostLimitHit = hosts.length > maxHosts;
+    if (hostLimitHit) {
+      hosts = hosts.slice(0, maxHosts);
+    }
+
+    // 3) run nmap -sV against selected ports with vulners script
     type NmapResult = {
       host: string;
       ip: string;
@@ -505,7 +513,7 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
     async function scanHost(host: string): Promise<NmapResult> {
       return new Promise<NmapResult>((resolve) => {
         // -Pn: skip host discovery; -T4: faster timings; scan all ports with service/version and OS, plus vuln scripts
-        const args = ['-Pn', '-T4', '-p', '80,443,8080,8000,8443', '-sV', host, '--script', 'vulners'];
+        const args = ['-Pn', '-T4', '-sV', '-p', nmapPorts, '--open', '--script', 'vulners', host];
         const nmap = spawn('nmap', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         let out = '';
         let err = '';
@@ -701,7 +709,7 @@ app.post('/api/nmap', reconLimiter, async (req, res) => {
     }));
 
     console.log('Final results being sent to frontend:', JSON.stringify(tableResults, null, 2)); // Debug log
-    res.json({ target, count: tableResults.length, results: tableResults });
+    res.json({ target, count: tableResults.length, results: tableResults, hostLimitHit });
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ error: 'Nmap scan failed', message: err.shortMessage || err.message || String(err) });
