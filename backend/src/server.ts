@@ -78,7 +78,7 @@ function extractHostname(url: string): string {
   } catch {
     // If URL parsing fails, try to extract manually
     const match = url.match(/^https?:\/\/([^\/:]+)/);
-    return match ? match[1] : url;
+    return match && match[1] ? match[1] : url;
   }
 }
 
