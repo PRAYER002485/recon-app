@@ -50,6 +50,15 @@ npm run dev
   # live check with httpx -mc 200, then light keyword grep via curl
   ```
 
+## Environment Variables
+
+For Railway deployment, you need to set the following environment variables:
+
+- `VIRUSTOTAL_API_KEY` - VirusTotal API key for reputation checks
+- `GSB_API_KEY` - Google Safe Browsing API key for threat detection
+
+See [RAILWAY_ENV_SETUP.md](./RAILWAY_ENV_SETUP.md) for detailed setup instructions.
+
 ## Notes
 - Long operations are capped at ~2 minutes. Adjust in `backend/src/server.ts` if needed.
 - If `httpx`/`naabu` output changes, parsing may need tweaks.

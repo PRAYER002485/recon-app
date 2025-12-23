@@ -117,6 +117,18 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Debug endpoint to check environment variables (remove in production if needed)
+app.get('/api/debug/env', (_req, res) => {
+  res.json({
+    hasVtKey: !!process.env.VIRUSTOTAL_API_KEY,
+    hasGsbKey: !!process.env.GSB_API_KEY,
+    vtKeyLength: process.env.VIRUSTOTAL_API_KEY?.length || 0,
+    gsbKeyLength: process.env.GSB_API_KEY?.length || 0,
+    vtKeyPrefix: process.env.VIRUSTOTAL_API_KEY?.substring(0, 10) || 'not set',
+    gsbKeyPrefix: process.env.GSB_API_KEY?.substring(0, 10) || 'not set',
+  });
+});
+
 // Basic rate limiting specific to recon endpoint
 const reconLimiter = rateLimit({
   windowMs: 60 * 1000,
