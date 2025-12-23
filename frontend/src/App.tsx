@@ -40,6 +40,22 @@ function createEmptySnapshots(): SectionSnapshots {
   }, {} as SectionSnapshots)
 }
 
+// Helper function to check if a string is an IP address
+function isIPAddress(str: string): boolean {
+  // IPv4 regex
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/
+  if (ipv4Regex.test(str)) {
+    const parts = str.split('.')
+    return parts.every(part => {
+      const num = parseInt(part, 10)
+      return num >= 0 && num <= 255
+    })
+  }
+  // IPv6 regex (simplified)
+  const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$/
+  return ipv6Regex.test(str)
+}
+
 function App() {
   const API_BASE = (import.meta as any).env?.VITE_API_BASE || ''
   const [stage, setStage] = useState<'home' | 'workspace'>('home')
@@ -134,7 +150,10 @@ function App() {
     const set = new Set<string>()
     for (const r of data.results) {
       const host = r.host || (r.url ? new URL(r.url).hostname : '')
-      if (host) set.add(host)
+      // Filter out IP addresses and empty strings
+      if (host && !isIPAddress(host)) {
+        set.add(host)
+      }
     }
     return Array.from(set).sort()
   }, [data])

@@ -54,6 +54,34 @@ app.use(cors({
 // Validate domain/hostname strictly
 const hostnameRegex = /^(?=.{1,253}$)(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)\.)+[a-zA-Z]{2,}$/;
 
+// Helper function to check if a string is an IP address
+function isIPAddress(str: string): boolean {
+  // IPv4 regex
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (ipv4Regex.test(str)) {
+    const parts = str.split('.');
+    return parts.every(part => {
+      const num = parseInt(part, 10);
+      return num >= 0 && num <= 255;
+    });
+  }
+  // IPv6 regex (simplified)
+  const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$/;
+  return ipv6Regex.test(str);
+}
+
+// Helper function to extract hostname from URL
+function extractHostname(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch {
+    // If URL parsing fails, try to extract manually
+    const match = url.match(/^https?:\/\/([^\/:]+)/);
+    return match ? match[1] : url;
+  }
+}
+
 // Helper function to validate domain names and filter out error messages
 function isValidDomain(line: string): boolean {
   // Filter out error messages, paths, and invalid strings
@@ -63,6 +91,8 @@ function isValidDomain(line: string): boolean {
   if (line.startsWith('open ') || line.startsWith('failed') || line.startsWith('cannot')) return false;
   if (line.includes('.config') || line.includes('.yaml')) return false; // Config file paths
   if (line.includes('getaddrinfo') || line.includes('ENOTFOUND')) return false; // DNS errors
+  // Filter out IP addresses
+  if (isIPAddress(line)) return false;
   // Basic domain validation: should contain at least one dot and valid characters
   const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
   return domainRegex.test(line);
@@ -252,17 +282,45 @@ app.post('/api/recon', reconLimiter, async (req, res) => {
     let results = lines.map((line) => {
       try {
         const obj = JSON.parse(line);
+        const url = obj.url ?? obj.host ?? '';
+        let host = obj.host ?? '';
+        
+        // Extract hostname from URL if host is an IP address or empty
+        if (isIPAddress(host) || !host) {
+          host = extractHostname(url);
+        }
+        
+        // Skip if host is still an IP address
+        if (isIPAddress(host)) {
+          return null;
+        }
+        
         return {
-          url: obj.url ?? obj.host ?? '',
-          host: obj.host ?? '',
+          url: url,
+          host: host,
           statusCode: obj.status_code ?? obj.status ?? null,
           title: obj.title ?? '',
           technologies: obj.tech ?? obj.technologies ?? [],
         };
       } catch {
         // Fallback: parse httpx plain output "https://host [code] [title] [techs]"
-        return { url: line, host: line, statusCode: null, title: '', technologies: [] };
+        const hostname = extractHostname(line);
+        if (isIPAddress(hostname)) {
+          return null;
+        }
+        return { url: line, host: hostname, statusCode: null, title: '', technologies: [] };
       }
+    }).filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // Deduplicate results by URL (normalize to lowercase for comparison)
+    const seenUrls = new Set<string>();
+    results = results.filter(result => {
+      const normalizedUrl = result.url.toLowerCase();
+      if (seenUrls.has(normalizedUrl)) {
+        return false;
+      }
+      seenUrls.add(normalizedUrl);
+      return true;
     });
 
     // If httpx produced no results but subfinder found subdomains, return them anyway
