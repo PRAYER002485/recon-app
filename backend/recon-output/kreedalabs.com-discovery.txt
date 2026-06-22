@@ -1,0 +1,13 @@
+# Recon discovery bundle for kreedalabs.com
+# Generated 2026-04-27T06:32:10.452Z
+# Counts: {"subfinder":0,"crtSh":0,"virusTotalHosts":2,"virusTotalIps":4,"bbotHosts":0,"bbotIps":0,"mergedSubdomains":2,"mergedIps":6}
+## Subdomains
+ralph-lauren.kreedalabs.com
+www.kreedalabs.com
+## IPs
+34.102.136.180
+34.160.37.117
+65.1.222.117
+185.230.63.107
+185.230.63.171
+185.230.63.186

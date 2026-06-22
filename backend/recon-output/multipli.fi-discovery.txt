@@ -1,0 +1,32 @@
+# Recon discovery bundle for multipli.fi
+# Generated 2026-04-21T12:46:43.997Z
+# Counts: {"subfinder":0,"crtSh":0,"virusTotalHosts":8,"virusTotalIps":4,"bbotHosts":0,"bbotIps":0,"mergedSubdomains":8,"mergedIps":19}
+## Subdomains
+api-testnet.multipli.fi
+api.multipli.fi
+app.multipli.fi
+blog.multipli.fi
+docs.multipli.fi
+testnet.multipli.fi
+v2.multipli.fi
+www.multipli.fi
+## IPs
+13.213.206.135
+13.215.239.219
+13.250.209.85
+18.141.114.80
+31.43.160.6
+31.43.161.6
+35.71.142.77
+52.74.6.109
+52.76.131.72
+52.223.52.2
+54.255.89.93
+75.2.60.5
+84.32.84.32
+104.18.40.47
+172.64.147.209
+2406:da18:b3d:e201::258
+2406:da18:b3d:e201::259
+2606:4700:4402::ac40:93d1
+2606:4700:4407::6812:282f
