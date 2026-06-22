@@ -33,6 +33,33 @@ npm run dev
 # open the Vite URL (default http://localhost:5173)
 ```
 
+## Garak (LLM vulnerability scan)
+
+This app exposes `POST /api/garak-scan` which runs [`garak`](https://github.com/NVIDIA/garak) on the **backend** (so your browser never talks to the target chatbot directly, avoiding CORS/`NetworkError`). The recommended way to scan a custom chatbot endpoint is to use garak’s REST generator (`rest.RestGenerator`) and provide:
+
+- the target URL (e.g. `https://hacktheagent.com/api/chat`)
+- required headers (cookies/session tokens, content-type, etc.)
+- a request JSON template containing `"$INPUT"` where garak should inject probe prompts
+- a response JSONPath like `$.bot_response.response` to extract the chatbot’s answer
+
+### Lightweight local install (no Torch/Transformers)
+
+`garak`’s full dependency set can be large. If you only need the REST generator for black-box HTTP endpoint testing, you can install a minimal copy into the repo and run via `PYTHONPATH`:
+
+```bash
+cd backend
+mkdir -p tools/garak_py
+python3 -m pip install --break-system-packages --no-deps --target tools/garak_py garak==0.13.3
+python3 -m pip install --break-system-packages --target tools/garak_py xdg-base-dirs==6.0.2 lorem==0.1.1 langdetect==1.0.9
+```
+
+The backend auto-detects `backend/tools/garak_py/` and sets garak’s HOME/XDG dirs into `backend/.garak_state/` so it can write reports safely.
+
+## AI Red Teaming (product workflow)
+
+If your goal is to **red team AI systems end-to-end** (inventory → attack coverage → financial impact → blue-team fixes + regression), see:
+- `AI_RED_TEAMING_ROADMAP.md`
+
 ## Usage
 - Enter domain like `example.com` and choose a section in the sidebar.
 - Subdomains runs:

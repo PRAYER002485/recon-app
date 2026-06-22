@@ -65,5 +65,18 @@ node_modules/
 # dotenv environment variables file
 .env
 
+# garak (local installs / runtime state)
+backend/tools/garak_py/
+backend/.garak_state/
+backend/.garak_home/
+backend/.garak_cache/
+backend/.garak_runs/
+
+# local python venvs (if created)
+backend/.venv*/
+
+# Cursor sandbox shim (local-only)
+backend/Cursor-*.AppImage
+
 # dataconnect generated files
 .dataconnect
