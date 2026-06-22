@@ -76,3 +76,5 @@ See [RAILWAY_ENV_SETUP.md](./RAILWAY_ENV_SETUP.md) for detailed setup instructio
 
 Set CI to run these on pull requests and on a nightly schedule.
 # recon-app
+
+<!-- coderabbit mcp probe -->
