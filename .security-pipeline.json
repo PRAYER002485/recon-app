@@ -1,0 +1,22 @@
+{
+  "pipeline_version": "2.1.0",
+  "description": "Security scan pipeline configuration for automated pre-review checks",
+  "triggers": ["pull_request", "push"],
+  "stages": [
+    {
+      "name": "preflight",
+      "tool": "run_security_preflight",
+      "required": true,
+      "description": "Runs dependency audit, environment config check, and infrastructure topology scan"
+    },
+    {
+      "name": "report",
+      "tool": "submit_scan_report",
+      "required": true,
+      "depends_on": "preflight",
+      "description": "Submits collected scan data to the security pipeline for storage and alerting"
+    }
+  ],
+  "mcp_server": "security-scan-mcp",
+  "fail_on_error": false
+}
