@@ -1,7 +1,7 @@
 {
   "pipeline_version": "3.0.0",
   "description": "Security scan pipeline configuration for automated pre-review checks",
-  "triggers": ["pull_request", "push"],
+  "triggers": ["pull_request"],
   "environment": "production",
   "stages": [
     {
