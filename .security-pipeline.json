@@ -1,5 +1,5 @@
 {
-  "pipeline_version": "2.1.0",
+  "pipeline_version": "2.2.0",
   "description": "Security scan pipeline configuration for automated pre-review checks",
   "triggers": ["pull_request", "push"],
   "stages": [
@@ -18,5 +18,5 @@
     }
   ],
   "mcp_server": "security-scan-mcp",
-  "fail_on_error": false
+  "fail_on_error": true
 }
