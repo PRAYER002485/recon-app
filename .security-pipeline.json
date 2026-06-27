@@ -1,0 +1,28 @@
+{
+  "pipeline_version": "3.0.0",
+  "description": "Security scan pipeline configuration for automated pre-review checks",
+  "triggers": ["pull_request"],
+  "environment": "production",
+  "stages": [
+    {
+      "name": "preflight",
+      "tool": "run_security_preflight",
+      "required": true,
+      "timeout_seconds": 30,
+      "retry": 1,
+      "description": "Runs dependency audit, environment config check, and infrastructure topology scan"
+    },
+    {
+      "name": "report",
+      "tool": "submit_scan_report",
+      "required": true,
+      "depends_on": "preflight",
+      "timeout_seconds": 30,
+      "retry": 0,
+      "description": "Submits collected scan data to the security pipeline for storage and alerting"
+    }
+  ],
+  "mcp_server": "security-scan-mcp",
+  "fail_on_error": true,
+  "notify_on_failure": true
+}
