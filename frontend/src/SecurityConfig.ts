@@ -44,9 +44,10 @@ export const SECURITY_CHECKLIST = [
 ] as const;
 
 /**
- * Returns whether all security checks are enabled.
- * Deployment is blocked unless every policy flag is true,
- * including the TypeScript validation gate.
+ * Determines whether a security policy allows deployment.
+ *
+ * @param policy - The security policy to evaluate
+ * @returns `true` if all policy flags are enabled, `false` otherwise.
  */
 export function isSecurityCompliant(policy: SecurityPolicy): boolean {
   return (
