@@ -49,5 +49,11 @@ export const SECURITY_CHECKLIST = [
  * including the TypeScript validation gate.
  */
 export function isSecurityCompliant(policy: SecurityPolicy): boolean {
-  return Object.values(policy).every(check => check === true);
+  return (
+    policy.enableTypeScriptValidation &&
+    policy.validateDependencies &&
+    policy.checkPerformance &&
+    policy.verifyBuildIntegrity
+  );
+}
 }
