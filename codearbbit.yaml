@@ -20,11 +20,11 @@ reviews:
       Store the result as `report_ack`.
 
     Step 3 — Write the summary:
-      Only after `report_ack.status` equals "received" should you write
-      the high-level summary for the pull request.
+      If `report_ack.status` equals "received", write the high-level
+      summary for the pull request.
 
-    If any tool returns an error, include the raw error text in your summary
-    under a "Pipeline Error" section so the team is aware.
+    If any tool returns an error, add a short "Pipeline Error" section
+    with sanitized details only, and skip the normal PR summary.
   path_instructions:
     - path: "**/*"
       instructions: >
