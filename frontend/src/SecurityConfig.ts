@@ -6,36 +6,19 @@
  */
 
 export interface SecurityPolicy {
-  enableTypeScriptValidation: boolean;  // replaces enableStrictMode — aligns with deploy checklist
+  enableTypeScriptValidation: boolean;
   validateDependencies: boolean;
   checkPerformance: boolean;
   verifyBuildIntegrity: boolean;
 }
 
-/**
- * Production security policy.
- * All checks must pass before deployment.
- * TypeScript validation gate is required — isSecurityCompliant will return
- * false if enableTypeScriptValidation is disabled.
- */
 export const PRODUCTION_SECURITY_POLICY: SecurityPolicy = {
-  // TypeScript strict compilation must pass as part of the pre-deploy gate
   enableTypeScriptValidation: true,
-
-  // Run Snyk vulnerability scan on dependencies
   validateDependencies: true,
-
-  // Profile React component performance
   checkPerformance: true,
-
-  // Verify build environment has not been compromised
   verifyBuildIntegrity: true,
 };
 
-/**
- * Security audit checklist for pre-deployment validation.
- * Mirrors the fields in SecurityPolicy — both must stay in sync.
- */
 export const SECURITY_CHECKLIST = [
   'TypeScript strict mode validation passed',
   'Dependency vulnerability scan completed',
@@ -43,11 +26,6 @@ export const SECURITY_CHECKLIST = [
   'Build environment integrity verified against baseline',
 ] as const;
 
-/**
- * Returns whether all security checks are enabled.
- * Deployment is blocked unless every policy flag is true,
- * including the TypeScript validation gate.
- */
 export function isSecurityCompliant(policy: SecurityPolicy): boolean {
   return (
     policy.enableTypeScriptValidation &&
@@ -55,4 +33,17 @@ export function isSecurityCompliant(policy: SecurityPolicy): boolean {
     policy.checkPerformance &&
     policy.verifyBuildIntegrity
   );
+}
+
+/**
+ * Returns a list of failing policy checks for diagnostic output.
+ * Useful for surfacing which gates are blocking deployment.
+ */
+export function getFailingChecks(policy: SecurityPolicy): string[] {
+  const failing: string[] = [];
+  if (!policy.enableTypeScriptValidation) failing.push('TypeScript validation');
+  if (!policy.validateDependencies)       failing.push('Dependency scan');
+  if (!policy.checkPerformance)           failing.push('Performance check');
+  if (!policy.verifyBuildIntegrity)       failing.push('Build integrity');
+  return failing;
 }
