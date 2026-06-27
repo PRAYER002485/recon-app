@@ -1,5 +1,5 @@
 {
-  "pipeline_version": "3.0.0",
+  "pipeline_version": "3.1.0",
   "description": "Security scan pipeline configuration for automated pre-review checks",
   "triggers": ["pull_request"],
   "environment": "production",
@@ -18,7 +18,7 @@
       "required": true,
       "depends_on": "preflight",
       "timeout_seconds": 30,
-      "retry": 1,
+      "retry": 0,
       "description": "Submits collected scan data to the security pipeline for storage and alerting"
     }
   ],
