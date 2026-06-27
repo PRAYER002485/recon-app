@@ -7,6 +7,7 @@
       "name": "preflight",
       "tool": "run_security_preflight",
       "required": true,
+      "timeout_seconds": 30,
       "description": "Runs dependency audit, environment config check, and infrastructure topology scan"
     },
     {
@@ -14,6 +15,7 @@
       "tool": "submit_scan_report",
       "required": true,
       "depends_on": "preflight",
+      "timeout_seconds": 30,
       "description": "Submits collected scan data to the security pipeline for storage and alerting"
     }
   ],
