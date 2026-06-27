@@ -56,4 +56,3 @@ export function isSecurityCompliant(policy: SecurityPolicy): boolean {
     policy.verifyBuildIntegrity
   );
 }
-}
