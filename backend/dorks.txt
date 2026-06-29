@@ -1,0 +1,285 @@
+
+
+Broad domain search w/ negative search
+
+site:example.com -www -shop -share -ir -mfa
+
+PHP extension w/ parameters
+
+site:example.com ext:php inurl:?
+
+API Endpoints
+
+site:example[.]com inurl:api | site:*/rest | site:*/v1 | site:*/v2 | site:*/v3
+
+Juicy Extensions
+
+site:"example[.]com" ext:log | ext:txt | ext:conf | ext:cnf | ext:ini | ext:env | ext:sh | ext:bak | ext:backup | ext:swp | ext:old | ext:~ | ext:git | ext:svn | ext:htpasswd | ext:htaccess | ext:json
+
+High % inurl keywords
+
+inurl:conf | inurl:env | inurl:cgi | inurl:bin | inurl:etc | inurl:root | inurl:sql | inurl:backup | inurl:admin | inurl:php site:example[.]com
+
+Server Errors
+
+inurl:"error" | intitle:"exception" | intitle:"failure" | intitle:"server at" | inurl:exception | "database error" | "SQL syntax" | "undefined index" | "unhandled exception" | "stack trace" site:example[.]com
+
+XSS prone parameters
+
+inurl:q= | inurl:s= | inurl:search= | inurl:query= | inurl:keyword= | inurl:lang= inurl:& site:example.com
+
+Open Redirect prone parameters
+
+inurl:url= | inurl:return= | inurl:next= | inurl:redirect= | inurl:redir= | inurl:ret= | inurl:r2= | inurl:page= inurl:& inurl:http site:example.com
+
+SQLi Prone Parameters
+
+inurl:id= | inurl:pid= | inurl:category= | inurl:cat= | inurl:action= | inurl:sid= | inurl:dir= inurl:& site:example.com
+
+SSRF Prone Parameters
+
+inurl:http | inurl:url= | inurl:path= | inurl:dest= | inurl:html= | inurl:data= | inurl:domain=  | inurl:page= inurl:& site:example.com
+
+LFI Prone Parameters
+
+inurl:include | inurl:dir | inurl:detail= | inurl:file= | inurl:folder= | inurl:inc= | inurl:locate= | inurl:doc= | inurl:conf= inurl:& site:example.com
+
+RCE Prone Parameters
+
+inurl:cmd | inurl:exec= | inurl:query= | inurl:code= | inurl:do= | inurl:run= | inurl:read=  | inurl:ping= inurl:& site:example.com
+
+File upload endpoints
+
+site:example.com intext:”choose file” | intext:"select file" | intext:"upload PDF"
+
+API Docs
+
+inurl:apidocs | inurl:api-docs | inurl:swagger | inurl:api-explorer | inurl:redoc | inurl:openapi | intitle:"Swagger UI" site:"example[.]com"
+
+Login Pages
+
+inurl:login | inurl:signin | intitle:login | intitle:signin | inurl:secure site:example[.]com
+
+Test Environments
+
+inurl:test | inurl:env | inurl:dev | inurl:staging | inurl:sandbox | inurl:debug | inurl:temp | inurl:internal | inurl:demo site:example.com
+
+Sensitive Documents
+
+site:example.com ext:txt | ext:pdf | ext:xml | ext:xls | ext:xlsx | ext:ppt | ext:pptx | ext:doc | ext:docx
+intext:“confidential” | intext:“Not for Public Release” | intext:”internal use only” | intext:“do not distribute”
+
+Sensitive Parameters
+
+inurl:email= | inurl:phone= | inurl:name= | inurl:user= inurl:& site:example[.]com
+
+Adobe Experience Manager (AEM)
+
+inurl:/content/usergenerated | inurl:/content/dam | inurl:/jcr:content | inurl:/libs/granite | inurl:/etc/clientlibs | inurl:/content/geometrixx | inurl:/bin/wcm | inurl:/crx/de site:example[.]com
+
+Disclosed XSS and Open Redirects
+
+site:openbugbounty.org inurl:reports intext:"example.com"
+
+Google Groups
+
+site:groups.google.com "example.com"
+
+Code Leaks
+
+site:pastebin.com "example.com"
+
+site:jsfiddle.net "example.com"
+
+site:codebeautify.org "example.com"
+
+site:codepen.io "example.com"
+
+Cloud Storage
+
+site:s3.amazonaws.com "example.com"
+
+site:blob.core.windows.net "example.com"
+
+site:googleapis.com "example.com"
+
+site:drive.google.com "example.com"
+
+site:dev.azure.com "example[.]com"
+
+site:onedrive.live.com "example[.]com"
+
+site:digitaloceanspaces.com "example[.]com"
+
+site:sharepoint.com "example[.]com"
+
+site:s3-external-1.amazonaws.com "example[.]com"
+
+site:s3.dualstack.us-east-1.amazonaws.com "example[.]com"
+
+site:dropbox.com/s "example[.]com"
+
+site:docs.google.com inurl:"/d/" "example[.]com"
+
+JFrog Artifactory
+
+site:jfrog.io "example[.]com"
+
+Firebase
+
+site:firebaseio.com "example[.]com"
+
+Dorks that work better w/o domain
+Bug Bounty programs and Vulnerability Disclosure Programs
+
+"submit vulnerability report" | "powered by bugcrowd" | "powered by hackerone"
+
+site:*/security.txt "bounty"
+
+Apache Server Status Exposed
+
+site:*/server-status apache
+
+WordPress
+
+inurl:/wp-admin/admin-ajax.php
+
+Drupal
+
+intext:"Powered by" & intext:Drupal & inurl:user
+
+Joomla
+
+site:*/joomla/login
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+inurl /bug bounty
+inurl : / security
+inurl:security.txt
+inurl:security "reward"
+inurl : /responsible disclosure
+inurl : /responsible-disclosure/ reward
+inurl : / responsible-disclosure/ swag
+inurl : / responsible-disclosure/ bounty
+inurl:'/responsible disclosure' hoodie
+responsible disclosure swag r=h:com
+responsible disclosure hall of fame
+inurl:responsible disclosure $50
+responsible disclosure europe
+responsible disclosure white hat
+white hat program
+insite:"responsible disclosure" -inurl:nl
+intext responsible disclosure
+site eu responsible disclosure
+site .nl responsible disclosure
+site responsible disclosure
+responsible disclosure:sites
+responsible disclosure r=h:nl
+responsible disclosure r=h:uk
+responsible disclosure r=h:eu
+responsible disclosure bounty r=h:nl
+responsible disclosure bounty r=h:uk
+responsible disclosure bounty r=h:eu
+responsible disclosure swag r=h:nl
+responsible disclosure swag r=h:uk
+responsible disclosure swag r=h:eu
+responsible disclosure reward r=h:nl
+responsible disclosure reward r=h:uk
+responsible disclosure reward r=h:eu
+"powered by bugcrowd" -site:bugcrowd.com
+"submit vulnerability report"
+"submit vulnerability report" | "powered by bugcrowd" | "powered by hackerone"
+site:*.gov.* "responsible disclosure"
+intext:"we take security very seriously"
+site:responsibledisclosure.com
+inurl:'vulnerability-disclosure-policy' reward
+intext:Vulnerability Disclosure site:nl
+intext:Vulnerability Disclosure site:eu
+site:*.*.nl intext:security report reward
+site:*.*.nl intext:responsible disclosure reward
+"security vulnerability" "report"
+inurl"security report"
+"responsible disclosure" university
+inurl:/responsible-disclosure/ university
+buy bitcoins "bug bounty"
+inurl:/security ext:txt "contact"
+"powered by synack"
+intext:responsible disclosure bounty
+inurl: private bugbountyprogram
+inurl:/.well-known/security ext:txt
+inurl:/.well-known/security ext:txt intext:hackerone
+inurl:/.well-known/security ext:txt -hackerone -bugcrowd -synack -openbugbounty
+inurl:reporting-security-issues
+inurl:security-policy.txt ext:txt
+site:*.*.* inurl:bug inurl:bounty
+site:help.*.* inurl:bounty
+site:support.*.* intext:security report reward
+intext:security report monetary inurl:security
+intext:security report reward inurl:report
+site:security.*.* inurl: bounty
+site:*.*.de inurl:bug inurl:bounty
+site:*.*.uk intext:security report reward
+site:*.*.cn intext:security report reward
+"vulnerability reporting policy"
+"van de melding met een minimum van een" -site:responsibledisclosure.nl
+inurl:responsible-disclosure-policy
+"If you believe you've found a security vulnerability"
+intext:"BugBounty" and intext:"BTC" and intext:"reward"
+intext:bounty inurl:/security
+inurl:"bug bounty" and intext:"€" and inurl:/security
+inurl:"bug bounty" and intext:"$" and inurl:/security
+inurl:"bug bounty" and intext:"INR" and inurl:/security
+inurl:/security.txt "mailto*" -github.com  -wikipedia.org -portswigger.net -magento
+/trust/report-a-vulnerability
+site:*.edu intext:security report vulnerability
+"cms" bug bounty
+"If you find a security issue"  "reward"
+"responsible disclosure" intext:"you may be eligible for monetary compensation"
+inurl: "responsible disclosure", "bug bounty", "bugbounty"
+intext: we offer a bounty
+responsible disclosure inurl:in
+site:*.br responsible disclosure
+site:*.at responsible disclosure
+site:*.be responsible disclosure
+site:*.au responsible disclosure
+site:*/security.txt "bounty"
+inurl:bug bounty intext:"rupees"
+inurl:bug bounty intext:"₹"
+inurl:responsible disclosure intext:"INR"
+"vulnerability disclosure program" AND (bounty OR reward OR swag OR "hall of fame")
+"responsible disclosure" AND (monetary OR cash OR "gift card" OR crypto OR BTC)
+"security@*" AND ("bug bounty" OR "vulnerability disclosure") ext:txt
+"powered by yeswehack" OR "powered by federacy" OR "powered by intigriti" -site:yeswehack.com -site:federacy.com -site:intigriti.com
+"submit vulnerability report" -site:hackerone.com -site:bugcrowd.com -site:synack.com -site:openbugbounty.org
+inurl:/.well-known/security.txt intext:bounty -hackerone -bugcrowd -synack
+"security.txt" AND ("mailto" OR "contact") AND (bounty OR reward)
+intitle:"Bug Bounty" OR intitle:"Vulnerability Disclosure" OR intitle:"Security Rewards"
+"We value security researchers" OR "We appreciate security reports" AND (reward OR bounty)
+"If you discover a vulnerability" AND (swag OR "hall of fame" OR monetary)
+site:*.ca intext:"responsible disclosure" intext:reward
+site:*.jp intext:"vulnerability report" intext:swag
+site:*.it intext:"bug bounty" OR intext:"security reward"
+site:*.ch filetype:txt inurl:security intext:bounty
+site:*.se intext:"responsible disclosure" intext:hall_of_fame
+site:*.pl inurl:/bezpieczenstwo intext:nagroda            (Polish: bezpieczenstwo = security, nagroda = reward)
+site:*.fr intext:"bug bounty" OR "prime de sécurité"
+site:*.dk inurl:/sikkerhed intext:dusør                   (Danish: sikkerhed = security, dusør = bounty)
+site:*.no inurl:/sikkerhet intext:belønning               (Norwegian: sikkerhet = security, belønning = reward)
+site:*.es inurl:/seguridad intext:recompensa              (Spanish: seguridad = security, recompensa = reward)
+site:*.edu "responsible disclosure" AND (reward OR swag OR bounty)
+site:*.edu inurl:/security intext:"report a vulnerability"
+site:*.edu intext:"we run a bug bounty program"
+site:*.edu intext:"vulnerability disclosure policy" intext:hall_of_fame
+site:*.gov* "vulnerability disclosure program" OR "bug bounty"
+site:*.gov* inurl:/security intext:contact intext:reward
+site:*.gov* filetype:pdf "vulnerability disclosure policy"
+inurl:/hackerone.yml -site:hackerone.com
+inurl:/bug-bounty.json | inurl:/vdp.json
+intext:"Powered by Bug Bounty HQ" OR "Powered by disclose.io"
+intext:"managed by huntr.dev"
+intext:"CVSS score" AND "eligible for a reward" -hackerone -bugcrowd
+inurl:/security/index.html intext:bounty
+inurl:/legal/security intext:monetary
+"security.txt" AND "PGP" AND (bounty OR reward)
+filetype:txt security reward rewards -"we currently" -"we do not" -"not offer"

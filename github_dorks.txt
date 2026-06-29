@@ -1,0 +1,105 @@
+("target.com" OR "*.target.com" OR "@target.com" OR "target")
+(path:*.env OR path:*.envrc OR path:*.prod OR path:*.secret OR path:*.private OR path:*.key OR path:*.pem OR path:*.pfx OR path:*.crt OR path:*.cer OR path:*.ovpn OR path:*.npmrc OR path:*.dockercfg OR path:*.tfvars OR path:*.yml OR path:*.yaml OR path:*.json OR path:*.xml OR path:*.config OR path:*.conf OR path:*.cfg OR path:*.ini OR path:*.properties OR path:*.txt OR path:*.log)
+(password OR passwd OR pwd OR secret OR SECRET OR api_key OR apikey OR api_secret OR access_key OR secret_key OR access_token OR auth_token OR client_secret OR consumer_key OR token OR bearer OR "DATABASE_URL" OR "DB_PASSWORD" OR "DATABASE_PASSWORD" OR "AWS_SECRET_ACCESS_KEY" OR "aws_access_key_id" OR "BEGIN RSA PRIVATE KEY" OR "BEGIN OPENSSH PRIVATE KEY" OR "BEGIN PRIVATE KEY" OR "BEGIN CERTIFICATE")
+NOT (example OR sample OR localhost OR gmail OR homestead OR root OR test OR demo)
+
+("target.com" OR "@target.com")
+("-----BEGIN OPENSSH PRIVATE KEY-----" OR "-----BEGIN RSA PRIVATE KEY-----" OR "-----BEGIN PRIVATE KEY-----" OR "-----BEGIN CERTIFICATE-----" OR "ssh2_auth_password" OR "id_rsa" OR ".pem")
+
+("target.com" OR "@target.com")
+("DB_PASSWORD" OR "DATABASE_URL" OR "DATABASE_PASSWORD" OR "DBpasswd" OR "JDBC" OR "connectionString" OR "QSqlDatabase" OR "setPassword")
+
+("target.com" OR "@target.com")
+("apiKey" OR "api_key" OR "api_token" OR "client_secret" OR "consumer_key" OR "databaseURL" OR "storageBucket" OR "firebase" OR "authDomain")
+
+("target.com" OR "@target.com")
+("ldap" OR "LDAP" OR "security_credentials" OR "Active Directory" OR "adfs" OR "saml" OR "okta" OR "onelogin")
+
+("target.com" OR "@target.com")
+("jenkins" OR "Jenkinsfile" OR ".gitlab-ci.yml" OR "circleci" OR "drone" OR "travis" OR "argo" OR "tekton")
+
+("target.com" OR "@target.com")
+("send_keys" OR "send,keys" OR "password" OR "login" OR "ftp" OR "aws" OR "config")
+
+("target.com" OR "@target.com")
+(path:src/*.js OR path:src/*.ts OR path:src/*.py OR path:src/*.sh OR path:src/*.yaml OR path:src/*.yml)
+(api_key OR token OR secret OR password OR authorization OR bearer)
+
+("target.com" OR "@target.com")
+(language:Python OR language:JavaScript OR language:TypeScript OR language:Bash OR language:Shell OR language:Go OR language:Java OR language:Ruby)
+(password OR secret OR token OR api_key OR private_key)
+
+("target.com" OR "@target.com")
+(path:**/.npmrc OR path:**/.pypirc OR path:**/.dockercfg OR path:**/.git-credentials OR path:**/.netrc)
+(_auth OR token OR password OR username)
+
+("target.com" OR "@target.com")
+(path:**/config.sh OR path:**/config.js OR path:**/config.json OR path:**/application.properties OR path:**/settings.py OR path:**/secrets.yml)
+(password OR api_key OR token OR secret)
+
+("target.com" OR "@target.com")
+("slack_token" OR "xoxb-" OR "xoxp-" OR "github_token" OR "ghp_" OR "glpat-" OR "sk-" OR "stripe_secret" OR "twilio" OR "sendgrid")
+
+("target.com" OR "@target.com")
+("s3.amazonaws.com" OR "blob.core.windows.net" OR "storage.googleapis.com" OR "firebaseio.com" OR "cloudfront.net")
+(secret OR token OR config)
+
+("target.com" OR "@target.com")
+("docker-compose" OR "kubernetes" OR "kubeconfig" OR ".kube/config" OR "helm" OR "terraform")
+(secret OR token OR certificate OR password)
+
+("target.com" OR "@target.com")
+("openid" OR "oauth" OR "oauth_token" OR "refresh_token" OR "jwt" OR "bearer")
+
+("target.com" OR "@target.com")
+("mailgun" OR "sendgrid" OR "smtp" OR "ses" OR "postmark")
+(password OR api_key)
+
+("target.com" OR "@target.com")
+("stripe" OR "paypal" OR "braintree" OR "square")
+(secret OR token OR api_key)
+
+("target.com" OR "@target.com")
+("twilio" OR "nexmo" OR "plivo")
+(auth_token OR api_key)
+
+("target.com" OR "@target.com")
+("mongo://" OR "mongodb://" OR "postgres://" OR "mysql://" OR "redis://" OR "amqp://" OR "jdbc:")
+
+("target.com" OR "@target.com")
+("openai" OR "gpt" OR "anthropic" OR "claude")
+("sk-" OR "api_key" OR "secret")
+
+("target.com" OR "@target.com")
+(owner:* OR user:* OR org:*)
+(password OR secret OR token OR credential)
+
+gist.github.com/search?q="target.com"+(password OR token OR secret OR api_key OR private_key)
+
+github.com/search?q="target.com"+(password OR token OR secret OR api_key OR private_key)
+
+github.com/search?q="target.com"+("BEGIN RSA PRIVATE KEY" OR "BEGIN OPENSSH PRIVATE KEY")
+
+github.com/search?q="target.com"+(filename:.env OR filename:.npmrc OR filename:id_rsa OR filename:config OR filename:settings.py)
+
+github.com/search?q="target.com"+(extension:sql OR extension:env OR extension:yaml OR extension:yml OR extension:json OR extension:pem)
+
+github.com/search?q="target.com"+("aws_access_key_id" OR "AWS_SECRET_ACCESS_KEY")
+
+github.com/search?q="target.com"+("firebase" OR "databaseURL" OR "storageBucket")
+
+github.com/search?q="target.com"+("JDBC" OR "connectionString" OR "DB_PASSWORD")
+
+github.com/search?q="target.com"+("ssh2_auth_password" OR ".pem" OR ".ovpn")
+
+github.com/search?q="target.com"+("send_keys" OR "selenium" OR "webdriver")
+
+github.com/search?q="target.com"+("okta" OR "ldap" OR "saml" OR "oauth")
+
+github.com/search?q="target.com"+("jenkins" OR ".gitlab-ci.yml" OR "circleci")
+
+github.com/search?q="target.com"+("terraform" OR "kubernetes" OR "docker-compose")
+
+github.com/search?q="target.com"+("slack_token" OR "ghp_" OR "glpat-" OR "sk-")
+
+github.com/search?q="target.com"+("internal use only" OR "confidential" OR "do not distribute")
